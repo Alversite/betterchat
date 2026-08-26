@@ -41,7 +41,11 @@ PLUGIN_EXPOSE(BetterChat, g_BetterChat);
 
 IVEngineServer2* g_pEngineServer2 = nullptr;
 IGameEventSystem* g_gameEventSystem = nullptr;
-IServerGameClients* g_pSource2GameClients = nullptr;
+
+// Already declared+defined by the SDK (interfaces.a) - extern only, matching
+// KillhausMonitor's exact pattern. Defining it again here causes a link-time
+// "multiple definition" error.
+extern IServerGameClients* g_pSource2GameClients;
 
 static CGlobalVars* GetGlobals()
 {
