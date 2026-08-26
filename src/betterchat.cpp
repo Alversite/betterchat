@@ -23,6 +23,15 @@
 #include "tier1/convar.h"
 
 #include "usermessages.pb.h"
+#include "cstrike15_usermessages.pb.h"
+
+// Team-change polling (see betterchat.h) - same SchemaEntity technique
+// KillhausMonitor already uses successfully in production.
+#include "schemasystem/schemasystem.h"
+#include <entity2/entitysystem.h>
+#include "utils.hpp"
+#include "CBaseEntity.h"
+#include "CCSPlayerController.h"
 
 #include <cctype>
 #include <cstdarg>
@@ -46,6 +55,29 @@ IGameEventSystem* g_gameEventSystem = nullptr;
 // KillhausMonitor's exact pattern. Defining it again here causes a link-time
 // "multiple definition" error.
 extern IServerGameClients* g_pSource2GameClients;
+extern ISchemaSystem* g_pSchemaSystem;
+extern ISource2Server* g_pSource2Server;
+
+// For the team-poll: same GameEntitySystem() resolution KillhausMonitor
+// already uses successfully in production (offset confirmed against current
+// CS2Fixes gamedata, per its own comment).
+class IGameResourceService;
+#ifndef GAMERESOURCESERVICESERVER_INTERFACE_VERSION
+#define GAMERESOURCESERVICESERVER_INTERFACE_VERSION "GameResourceServiceServerV001"
+#endif
+static IGameResourceService* g_pGameResourceServiceServer = nullptr;
+static CEntitySystem* g_pEntitySystem = nullptr;
+static CGameEntitySystem* g_pGameEntitySystem = nullptr;
+
+static CGameEntitySystem* GameEntitySystem()
+{
+	if (!g_pGameResourceServiceServer)
+		return nullptr;
+	return *reinterpret_cast<CGameEntitySystem**>(
+		reinterpret_cast<uintptr_t>(g_pGameResourceServiceServer) + WIN_LINUX(0x58, 0x50));
+}
+
+SH_DECL_HOOK3_void(IServerGameDLL, GameFrame, SH_NOATTRIB, 0, bool, bool, bool);
 
 static CGlobalVars* GetGlobals()
 {
@@ -457,6 +489,7 @@ void BetterChat::Hook_ClientDisconnect(CPlayerSlot slot, ENetworkDisconnectionRe
 			SendChat("Игрок {GREEN}%s{DEFAULT} покинул сервер", pszName ? pszName : info.name.c_str());
 
 		info.connected = false;
+		info.lastKnownTeam = -1; // fresh slate for whoever connects into this slot next
 	}
 
 	RETURN_META(MRES_IGNORED);
@@ -485,41 +518,100 @@ void BetterChat::Hook_ClientCommand(CPlayerSlot slot, const CCommand& args)
 	SlotInfo& info = m_Slots[i];
 	const char* playerName = info.name.empty() ? "?" : info.name.c_str();
 
-	// --- team change: "jointeam <n>" (1=spec, 2=T, 3=CT) ---
-	if (m_bCustomTeamMessages && !strcmp(cmd, "jointeam") && args.ArgC() >= 2)
-	{
-		int team = atoi(args.Arg(1));
-		const char* phrase = TeamChangePhrase(team);
-		if (phrase)
-			SendChat("Игрок {GREEN}%s{DEFAULT} %s", playerName, phrase);
-
-		RETURN_META(MRES_IGNORED);
-	}
-
-	// --- chat filter: "say" / "say_team" (what the PLAYER typed) ---
-	if ((!strcmp(cmd, "say") || !strcmp(cmd, "say_team")) && args.ArgC() >= 2)
-	{
-		std::string text = args.Arg(1);
-		if (!text.empty() && text.front() == '"' && text.back() == '"' && text.size() >= 2)
-			text = text.substr(1, text.size() - 2);
-
-		if (IsPlayerChatBlocked(text))
-		{
-			if (m_bDebugMode)
-				Msg("[BetterChat] Blocked chat from %s: %s\n", playerName, text.c_str());
-
-			RETURN_META(MRES_SUPERCEDE); // swallow the command - it never reaches chat
-		}
-	}
+	// NOTE: verified live on 26.08.2026 that neither "jointeam" nor "say" ever
+	// reach ClientCommand in CS2 - team changes and chat are handled through
+	// other paths entirely (see PollTeamChanges() and Hook_PostEventAbstract()).
+	// Kept as a debug trace in case some OTHER command turns out useful here.
+	if (m_bDebugMode)
+		Msg("[BetterChat] ClientCommand slot=%d cmd=%s argc=%d\n", i, cmd, args.ArgC());
 
 	RETURN_META(MRES_IGNORED);
 }
 
-// Suppresses Valve's own native UM_TextMsg broadcasts whose param(0) is a
-// blocked key (blocked_text.txt / blocked_radio.txt) - by zeroing the
-// recipient bitmask before the original call runs, same technique as
-// cs2kz-metamod's kz_quiet.cpp. Never touches BetterChat's own messages:
-// those go through the OTHER PostEventAbstract overload entirely.
+// Polls each connected player's team once every ~0.5s and fires the
+// team-change chat line when it differs from the last known value. Not
+// event-driven because CS2 doesn't expose a clean, signature-free hook for
+// team changes (see betterchat.h for why).
+void BetterChat::PollTeamChanges()
+{
+	g_pGameEntitySystem = GameEntitySystem();
+	g_pEntitySystem = reinterpret_cast<CEntitySystem*>(g_pGameEntitySystem);
+	if (!g_pEntitySystem)
+		return;
+
+	for (CEntityInstance* e : UTIL_FindEntityByClassnameAll("cs_player_controller"))
+	{
+		CCSPlayerController* pc = reinterpret_cast<CCSPlayerController*>(e);
+		if (!pc || !pc->IsConnected())
+			continue;
+
+		int slot = pc->GetPlayerSlot();
+		if (slot < 0 || slot >= 64)
+			continue;
+
+		SlotInfo& info = m_Slots[slot];
+		int team = pc->GetTeam();
+
+		if (info.lastKnownTeam == -1)
+		{
+			// First time we see this player - just record the team, don't
+			// announce (avoids a spurious message right after connect).
+			info.lastKnownTeam = team;
+			continue;
+		}
+
+		if (team != info.lastKnownTeam)
+		{
+			info.lastKnownTeam = team;
+
+			const char* name = pc->GetPlayerName();
+			if (!name || !name[0])
+				name = info.name.empty() ? "?" : info.name.c_str();
+
+			if (m_bDebugMode)
+				Msg("[BetterChat] Team change slot=%d name=%s team=%d\n", slot, name, team);
+
+			if (m_bCustomTeamMessages)
+			{
+				const char* phrase = TeamChangePhrase(team);
+				if (phrase)
+					SendChat("Игрок {GREEN}%s{DEFAULT} %s", name, phrase);
+			}
+		}
+	}
+}
+
+void BetterChat::Hook_GameFrame(bool simulating, bool bFirstTick, bool bLastTick)
+{
+	CGlobalVars* pGlobals = GetGlobals();
+	if (pGlobals)
+	{
+		float dt = pGlobals->curtime - m_flLastFrameCurtime;
+		m_flLastFrameCurtime = pGlobals->curtime;
+		if (dt < 0.0f || dt > 1.0f)
+			dt = 0.0f;
+
+		m_flTeamPollAccum += dt;
+		if (m_flTeamPollAccum >= 0.5f)
+		{
+			m_flTeamPollAccum = 0.0f;
+			PollTeamChanges();
+		}
+	}
+}
+
+// Suppresses:
+//  - Valve's own native TextMsg broadcasts whose param(0) is a blocked key
+//    (blocked_text.txt / blocked_radio.txt)
+//  - real player chat (SayText2) whose text matches blocked_chat_words.txt
+// by zeroing the recipient bitmask before the original call runs - same
+// technique cs2kz-metamod's kz_quiet.cpp uses in production. Never touches
+// BetterChat's own messages: those go through the OTHER PostEventAbstract
+// overload entirely (the IRecipientFilter one SendChat() calls).
+//
+// CS2 dispatches the "same" message under two different numeric IDs
+// depending on path (the generic engine one and the CS-game-specific one),
+// so - same as cs2kz-metamod - both are checked.
 void BetterChat::Hook_PostEventAbstract(CSplitScreenSlot nSlot, bool bLocalOnly, int nClientCount, const uint64* clients,
 										 INetworkMessageInternal* pEvent, const CNetMessage* pData, unsigned long nSize,
 										 NetChannelBufType_t bufType)
@@ -530,24 +622,55 @@ void BetterChat::Hook_PostEventAbstract(CSplitScreenSlot nSlot, bool bLocalOnly,
 	}
 
 	NetMessageInfo_t* info = pEvent->GetNetMessageInfo();
-	if (!info || info->m_MessageId != UM_TextMsg)
+	if (!info)
 	{
 		RETURN_META(MRES_IGNORED);
 	}
 
-	auto* msg = const_cast<CNetMessage*>(pData)->ToPB<CUserMessageTextMsg>();
-	if (msg->param_size() < 1)
+	if (info->m_MessageId == UM_TextMsg || info->m_MessageId == CS_UM_TextMsg)
 	{
-		RETURN_META(MRES_IGNORED);
-	}
+		auto* msg = const_cast<CNetMessage*>(pData)->ToPB<CUserMessageTextMsg>();
+		if (msg->param_size() >= 1)
+		{
+			const std::string key = msg->param(0);
+			if (IsNativeTextKeyBlocked(key))
+			{
+				if (m_bDebugMode)
+					Msg("[BetterChat] Suppressed native TextMsg: %s\n", key.c_str());
 
-	const std::string key = msg->param(0);
-	if (IsNativeTextKeyBlocked(key))
+				*const_cast<uint64*>(clients) = 0;
+			}
+		}
+	}
+	else if (info->m_MessageId == UM_SayText2 || info->m_MessageId == CS_UM_SayText2)
 	{
+		auto* msg = const_cast<CNetMessage*>(pData)->ToPB<CUserMessageSayText2>();
+		std::string text = msg->param2();
+
 		if (m_bDebugMode)
-			Msg("[BetterChat] Suppressed native TextMsg: %s\n", key.c_str());
+			Msg("[BetterChat] SayText2 messagename=%s param1=%s param2=%s\n",
+				msg->messagename().c_str(), msg->param1().c_str(), text.c_str());
 
-		*const_cast<uint64*>(clients) = 0; // zero recipients - original call still runs, reaches nobody
+		if (!text.empty() && IsPlayerChatBlocked(text))
+		{
+			if (m_bDebugMode)
+				Msg("[BetterChat] Blocked chat text: %s\n", text.c_str());
+
+			*const_cast<uint64*>(clients) = 0;
+		}
+	}
+	else if (info->m_MessageId == UM_SayText || info->m_MessageId == CS_UM_SayText)
+	{
+		auto* msg = const_cast<CNetMessage*>(pData)->ToPB<CUserMessageSayText>();
+		std::string text = msg->text();
+
+		if (!text.empty() && IsPlayerChatBlocked(text))
+		{
+			if (m_bDebugMode)
+				Msg("[BetterChat] Blocked chat text (SayText): %s\n", text.c_str());
+
+			*const_cast<uint64*>(clients) = 0;
+		}
 	}
 
 	RETURN_META(MRES_IGNORED);
@@ -565,11 +688,15 @@ bool BetterChat::Load(PluginId id, ISmmAPI* ismm, char* error, size_t maxlen, bo
 	GET_V_IFACE_ANY(GetEngineFactory, g_gameEventSystem, IGameEventSystem, GAMEEVENTSYSTEM_INTERFACE_VERSION);
 	GET_V_IFACE_ANY(GetEngineFactory, g_pNetworkMessages, INetworkMessages, NETWORKMESSAGES_INTERFACE_VERSION);
 	GET_V_IFACE_ANY(GetServerFactory, g_pSource2GameClients, IServerGameClients, SOURCE2GAMECLIENTS_INTERFACE_VERSION);
+	GET_V_IFACE_ANY(GetServerFactory, g_pSource2Server, ISource2Server, SOURCE2SERVER_INTERFACE_VERSION);
+	GET_V_IFACE_ANY(GetEngineFactory, g_pSchemaSystem, ISchemaSystem, SCHEMASYSTEM_INTERFACE_VERSION);
+	GET_V_IFACE_ANY(GetEngineFactory, g_pGameResourceServiceServer, IGameResourceService, GAMERESOURCESERVICESERVER_INTERFACE_VERSION);
 
 	SH_ADD_HOOK(IServerGameClients, ClientPutInServer, g_pSource2GameClients, SH_MEMBER(this, &BetterChat::Hook_ClientPutInServer), true);
 	SH_ADD_HOOK(IServerGameClients, ClientDisconnect, g_pSource2GameClients, SH_MEMBER(this, &BetterChat::Hook_ClientDisconnect), true);
 	SH_ADD_HOOK(IServerGameClients, ClientCommand, g_pSource2GameClients, SH_MEMBER(this, &BetterChat::Hook_ClientCommand), false);
 	SH_ADD_HOOK(IGameEventSystem, PostEventAbstract, g_gameEventSystem, SH_MEMBER(this, &BetterChat::Hook_PostEventAbstract), false);
+	SH_ADD_HOOK(IServerGameDLL, GameFrame, g_pSource2Server, SH_MEMBER(this, &BetterChat::Hook_GameFrame), true);
 
 	LoadConfig();
 
@@ -588,6 +715,10 @@ bool BetterChat::Unload(char* error, size_t maxlen)
 	if (g_gameEventSystem)
 	{
 		SH_REMOVE_HOOK(IGameEventSystem, PostEventAbstract, g_gameEventSystem, SH_MEMBER(this, &BetterChat::Hook_PostEventAbstract), false);
+	}
+	if (g_pSource2Server)
+	{
+		SH_REMOVE_HOOK(IServerGameDLL, GameFrame, g_pSource2Server, SH_MEMBER(this, &BetterChat::Hook_GameFrame), true);
 	}
 	return true;
 }

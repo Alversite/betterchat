@@ -45,9 +45,18 @@ public: // SourceHook callbacks (all on ISource2GameClients - one interface, one
 	// public CS2 plugins (e.g. cs2kz-metamod) use for this exact purpose.
 	// Different vtable slot than the IRecipientFilter overload SendChat() uses,
 	// so this can never intercept BetterChat's own outgoing messages.
+	// Also handles SayText/SayText2 (real player chat) for blocked_chat_words.txt.
 	void Hook_PostEventAbstract(CSplitScreenSlot nSlot, bool bLocalOnly, int nClientCount, const uint64* clients,
 								 INetworkMessageInternal* pEvent, const CNetMessage* pData, unsigned long nSize,
 								 NetChannelBufType_t bufType);
+
+	// Team changes in CS2 don't go through a "jointeam" ClientCommand (verified
+	// live on 26.08.2026 - it never fires) and there's no clean, signature-free
+	// hook for it either. So: poll each connected player's team every half
+	// second via GameEntitySystem/schema (same technique KillhausMonitor already
+	// uses successfully in production) and diff against the last-known value.
+	void Hook_GameFrame(bool simulating, bool bFirstTick, bool bLastTick);
+	void PollTeamChanges();
 
 public: // logic
 	void LoadConfig();
@@ -95,8 +104,12 @@ public: // per-slot bookkeeping (no entity/schema lookups needed)
 		uint64 xuid = 0;
 		bool connected = false;
 		float lastConnectTime = -1000.0f;
+		int lastKnownTeam = -1; // -1 = not yet observed (don't announce on first sight)
 	};
 	SlotInfo m_Slots[64];
+
+	float m_flTeamPollAccum = 0.0f;
+	float m_flLastFrameCurtime = 0.0f;
 };
 
 extern BetterChat g_BetterChat;
