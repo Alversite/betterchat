@@ -638,12 +638,19 @@ void BetterChat::Hook_PostEventAbstract(CSplitScreenSlot nSlot, bool bLocalOnly,
 		RETURN_META(MRES_IGNORED);
 	}
 
+	if (m_bDebugMode)
+		Msg("[BetterChat] PostEventAbstract msgid=%d\n", (int)info->m_MessageId);
+
 	if (info->m_MessageId == UM_TextMsg || info->m_MessageId == CS_UM_TextMsg)
 	{
 		auto* msg = const_cast<CNetMessage*>(pData)->ToPB<CUserMessageTextMsg>();
 		if (msg->param_size() >= 1)
 		{
 			const std::string key = msg->param(0);
+
+			if (m_bDebugMode)
+				Msg("[BetterChat] TextMsg dest=%d param0=%s\n", msg->dest(), key.c_str());
+
 			if (IsNativeTextKeyBlocked(key))
 			{
 				if (m_bDebugMode)
