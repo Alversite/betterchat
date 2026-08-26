@@ -74,11 +74,13 @@ class IGameResourceService;
 #ifndef GAMERESOURCESERVICESERVER_INTERFACE_VERSION
 #define GAMERESOURCESERVICESERVER_INTERFACE_VERSION "GameResourceServiceServerV001"
 #endif
-static IGameResourceService* g_pGameResourceServiceServer = nullptr;
-static CEntitySystem* g_pEntitySystem = nullptr;
-static CGameEntitySystem* g_pGameEntitySystem = nullptr;
+IGameResourceService* g_pGameResourceServiceServer = nullptr;
+CEntitySystem* g_pEntitySystem = nullptr;
+CGameEntitySystem* g_pGameEntitySystem = nullptr;
 
-static CGameEntitySystem* GameEntitySystem()
+// Not static: entity2/entitysystem.h forward-declares this exact free
+// function (SDK code links against it by name), same as KillhausMonitor.
+CGameEntitySystem* GameEntitySystem()
 {
 	if (!g_pGameResourceServiceServer)
 		return nullptr;
