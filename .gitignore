@@ -1,0 +1,7 @@
+/build/
+*.o
+*.so
+*.dll
+*.pdb
+__pycache__/
+plugin-metadata.json

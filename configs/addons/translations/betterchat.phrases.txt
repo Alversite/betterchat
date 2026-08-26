@@ -1,0 +1,27 @@
+// СПРАВОЧНО: реальный текст сейчас захардкожен в src/betterchat.cpp
+// (SendChat(...) в Hook_ClientPutInServer / Hook_ClientDisconnect /
+// Hook_ClientCommand), а не читается из этого файла - формат и цвета
+// специально сделаны такими же, как в оригинальном chat_cleaner.phrases.txt.
+"Phrases"
+{
+	"User_Connect"
+	{
+		"ru"		"Игрок {GREEN}%s{DEFAULT} подключился к серверу"
+	}
+	"User_Leave"
+	{
+		"ru"		"Игрок {GREEN}%s{DEFAULT} покинул сервер"
+	}
+	"ChangeTeam_SPEC"
+	{
+		"ru"		"Игрок {GREEN}%s{DEFAULT} перешёл в {GRAY}Наблюдатели"
+	}
+	"ChangeTeam_T"
+	{
+		"ru"		"Игрок {GREEN}%s{DEFAULT} перешёл в {OLIVE}Террористы"
+	}
+	"ChangeTeam_CT"
+	{
+		"ru"		"Игрок {GREEN}%s{DEFAULT} перешёл в {BLUE}Контр-Террористы"
+	}
+}

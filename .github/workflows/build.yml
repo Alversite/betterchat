@@ -1,0 +1,89 @@
+name: Build BetterChat
+
+on:
+  push:
+    branches: ['*']
+    paths-ignore:
+      - 'README.md'
+      - 'LICENSE'
+  workflow_dispatch:
+
+jobs:
+  build:
+    name: Build (Linux)
+    runs-on: ubuntu-latest
+    container: registry.gitlab.steamos.cloud/steamrt/sniper/sdk
+
+    steps:
+      - name: Checkout BetterChat
+        uses: actions/checkout@v4
+        with:
+          path: betterchat
+          fetch-depth: 0
+
+      - name: Checkout hl2sdk (cs2)
+        uses: actions/checkout@v4
+        with:
+          repository: alliedmodders/hl2sdk
+          ref: cs2
+          path: hl2sdk-cs2
+          submodules: recursive
+
+      - name: Checkout Metamod:Source
+        uses: actions/checkout@v4
+        with:
+          repository: alliedmodders/metamod-source
+          ref: master
+          path: metamod-source
+          submodules: recursive
+
+      - name: Checkout hl2sdk-manifests
+        uses: actions/checkout@v4
+        with:
+          repository: alliedmodders/hl2sdk-manifests
+          path: hl2sdk-manifests
+
+      - name: Checkout AMBuild
+        uses: actions/checkout@v4
+        with:
+          repository: alliedmodders/ambuild
+          path: ambuild
+
+      - name: Install Clang 21
+        run: |
+          echo "deb http://apt.llvm.org/bullseye/ llvm-toolchain-bullseye-21 main" >> /etc/apt/sources.list.d/llvm.list
+          echo "deb-src http://apt.llvm.org/bullseye/ llvm-toolchain-bullseye-21 main" >> /etc/apt/sources.list.d/llvm.list
+          wget -O - https://apt.llvm.org/llvm-snapshot.gpg.key | apt-key add -
+          apt update && apt install -y clang-21
+          ln -sf /usr/bin/clang-21 /usr/bin/clang && ln -sf /usr/bin/clang++-21 /usr/bin/clang++
+
+      - name: Install AMBuild
+        run: |
+          cd ambuild && python setup.py install && cd ..
+
+      - name: Build
+        working-directory: betterchat
+        env:
+          CC: clang
+          CXX: clang++
+          HL2SDKCS2: ${{ github.workspace }}/hl2sdk-cs2
+          MMSOURCE_DEV: ${{ github.workspace }}/metamod-source
+          HL2SDKMANIFESTS: ${{ github.workspace }}/hl2sdk-manifests
+        run: |
+          git config --global --add safe.directory '*'
+          mkdir build && cd build
+          python ../configure.py --enable-optimize --sdks cs2
+          ambuild
+
+      - name: Upload artifact (packaged addons/)
+        uses: actions/upload-artifact@v4
+        with:
+          name: BetterChat-linux
+          path: betterchat/build/package
+
+      - name: Upload artifact (raw .so)
+        uses: actions/upload-artifact@v4
+        with:
+          name: BetterChat-so
+          path: betterchat/build/package/addons/BetterChat/BetterChat.so
+          if-no-files-found: warn

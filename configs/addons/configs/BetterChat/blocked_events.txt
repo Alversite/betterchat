@@ -1,0 +1,8 @@
+// Оставлено для совместимости/документации со старым chat_cleaner.
+// BetterChat не глушит нативные ивенты движка (v1) - см. комментарий в
+// blocked_text.txt. Файл ни на что сейчас не влияет.
+
+player_radio
+player_team
+player_disconnect
+player_connect

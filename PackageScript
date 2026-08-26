@@ -1,0 +1,36 @@
+# vim: set ts=2 sw=2 tw=99 noet ft=python:
+import os
+
+builder.SetBuildFolder('package')
+
+name = MMSPlugin.metadata['name']  # "BetterChat"
+
+# Flat layout, same convention as the other Killhaus plugins:
+#   addons/BetterChat/BetterChat.so
+#   addons/metamod/BetterChat.vdf
+#   addons/configs/BetterChat/{settings.ini, blocked_text.txt, blocked_radio.txt, blocked_events.txt}
+#   addons/translations/betterchat.phrases.txt
+plugin_folder = builder.AddFolder(os.path.join('addons', name))
+metamod_folder = builder.AddFolder(os.path.join('addons', 'metamod'))
+configs_folder = builder.AddFolder(os.path.join('addons', 'configs', name))
+translations_folder = builder.AddFolder(os.path.join('addons', 'translations'))
+
+vdf_content = '"Metamod Plugin"\n{\n'
+vdf_content += f'\t"alias"\t"{name}"\n'
+vdf_content += f'\t"file"\t"addons/{name}/{name}"\n'
+vdf_content += '}\n'
+builder.AddOutputFile(os.path.join('addons', 'metamod', f'{name}.vdf'), vdf_content.encode('utf8'))
+
+for fname in ['settings.ini', 'blocked_text.txt', 'blocked_radio.txt', 'blocked_events.txt']:
+  builder.AddCopy(
+    os.path.join(builder.sourcePath, 'configs', 'addons', 'configs', name, fname),
+    configs_folder)
+
+builder.AddCopy(
+  os.path.join(builder.sourcePath, 'configs', 'addons', 'translations', 'betterchat.phrases.txt'),
+  translations_folder)
+
+for task in MMSPlugin.binaries:
+  binary = task.binary
+  ext = os.path.splitext(binary.path)[1]
+  builder.AddCopy(binary, os.path.join('addons', name, f'{name}{ext}'))
