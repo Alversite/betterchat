@@ -1,5 +1,7 @@
 #include "memaddr.h"
 
+using namespace DynLibUtils;
+
 //-----------------------------------------------------------------------------
 // Purpose: ResolveRelativeAddress wrapper
 // Input  : opcodeOffset - 
