@@ -1,17 +1,63 @@
-// Блокируемые фразы в чате игроков (регистр не важен, ищется подстрока)
+// Блокируемые НАТИВНЫЕ текстовые сообщения Valve (ключи UM_TextMsg param(0)).
+// Точное совпадение (не подстрока). Список перенесён без изменений из
+// оригинального chat_cleaner - тот же смысл, тот же список.
 //
-// ВАЖНО: в старом chat_cleaner этот файл содержал ключи НАТИВНЫХ сообщений
-// Valve (Player_Cash_Award_..., Cstrike_TitlesTXT_Game_connected и т.п.) -
-// то есть блокировал служебный спам движка, а не то, что печатают игроки.
-// BetterChat пока делает другое (и более полезное на практике): блокирует
-// РЕАЛЬНЫЙ текст, который игрок пишет в чат командой say/say_team. Ниже -
-// стартовый список под рекламных ботов, которых поймали в логах 26.08.2026
-// (см. отчёт про "cs2commends.com" / "jaegerservice.xyz").
-//
-// Подавление нативного спама (кэш-award тексты и т.п.) - отдельная задача на
-// будущее, пока не портировано.
+// За реальный спам, который печатают игроки, отвечает blocked_chat_words.txt.
 
-cs2commends.com
-jaegerservice.xyz
-discord.gg/cs2commends
-steam.cs2commends.com
+Player_Cash_Award_Killed_VIP
+Player_Cash_Award_Killed_Enemy_Generic
+Player_Cash_Award_Killed_Enemy
+Player_Cash_Award_Bomb_Planted
+Player_Cash_Award_Bomb_Defused
+Player_Cash_Award_Rescued_Hostage
+Player_Cash_Award_Interact_Hostage
+Player_Cash_Award_Respawn
+Player_Cash_Award_Get_Killed
+Player_Cash_Award_Kill_Teammate
+Player_Cash_Award_Damage_Hostage
+Player_Cash_Award_Kill_Hostage
+Team_Cash_Award_T_Win_Bomb
+Team_Cash_Award_Elim_Hostage
+Team_Cash_Award_Elim_Bomb
+Team_Cash_Award_Win_Time
+Team_Cash_Award_Win_Defuse_Bomb
+Team_Cash_Award_Win_Hostages_Rescue
+Team_Cash_Award_Win_Hostage_Rescue
+Team_Cash_Award_Loser_Bonus
+Team_Cash_Award_Bonus_Shorthanded
+Team_Cash_Award_Loser_Bonus_Neg
+Team_Cash_Award_Loser_Zero
+Team_Cash_Award_Rescued_Hostage
+Team_Cash_Award_Hostage_Interaction
+Team_Cash_Award_Hostage_Alive
+Team_Cash_Award_Planted_Bomb_But_Defused
+Team_Cash_Award_Survive_GuardianMode_Wave
+Team_Cash_Award_CT_VIP_Escaped
+Team_Cash_Award_T_VIP_Killed
+Team_Cash_Award_no_income
+Team_Cash_Award_no_income_suicide
+Team_Cash_Award_Generic
+Team_Cash_Award_Custom
+Team_Cash_Award_Dead_Terrorists
+Team_Cash_Award_Dead_CTs
+Player_Cash_Award_ExplainSuicide_YouGotCash
+Player_Cash_Award_ExplainSuicide_TeammateGotCash
+Player_Cash_Award_ExplainSuicide_EnemyGotCash
+Player_Cash_Award_ExplainSuicide_Spectators
+Notice_Bonus_Shorthanded_Eligibility
+Notice_Bonus_Shorthanded_Eligibility_Single
+Notice_Bonus_Enemy_Team
+Player_Team_Award_Bonus_Weapon
+Player_Team_Award_Bonus_Weapon_Plural
+Player_Team_Award_Picked_Up_Dogtag
+Player_Team_Award_Picked_Up_Dogtag_Plural
+Player_Team_Award_Picked_Up_Dogtag_Friendly
+Cstrike_TitlesTXT_Game_connected
+Cstrike_TitlesTXT_Game_disconnected
+Cstrike_TitlesTXT_Game_join_ct
+Cstrike_TitlesTXT_Game_join_ct_auto
+Cstrike_TitlesTXT_Game_join_terrorist
+Cstrike_TitlesTXT_Game_join_terrorist_auto
+Cstrike_game_join_spectators
+Cstrike_game_join_terrorist
+Cstrike_game_join_ct

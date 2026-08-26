@@ -18,6 +18,7 @@
 #include <ISmmPlugin.h>
 #include <eiface.h>
 #include <playerslot.h>
+#include <networksystem/inetworkserializer.h>
 
 #include <string>
 #include <vector>
@@ -38,11 +39,21 @@ public: // SourceHook callbacks (all on ISource2GameClients - one interface, one
 								char const* pszName, uint64 xuid, char const* pszNetworkID);
 	void Hook_ClientCommand(CPlayerSlot slot, const CCommand& args);
 
+	// Suppresses Valve's own native UM_TextMsg broadcasts (cash-award spam,
+	// "Cstrike_TitlesTXT_Game_connected" etc, radio callout text) whose param(0)
+	// key is listed in blocked_text.txt / blocked_radio.txt - same technique
+	// public CS2 plugins (e.g. cs2kz-metamod) use for this exact purpose.
+	// Different vtable slot than the IRecipientFilter overload SendChat() uses,
+	// so this can never intercept BetterChat's own outgoing messages.
+	void Hook_PostEventAbstract(CSplitScreenSlot nSlot, bool bLocalOnly, int nClientCount, const uint64* clients,
+								 INetworkMessageInternal* pEvent, const CNetMessage* pData, unsigned long nSize,
+								 NetChannelBufType_t bufType);
+
 public: // logic
 	void LoadConfig();
 	void SendChat(const char* fmt, ...);
-	bool IsChatBlocked(const std::string& text) const;
-	bool IsRadioBlocked(const std::string& radioCmd) const;
+	bool IsPlayerChatBlocked(const std::string& text) const;    // player-typed spam (say/say_team)
+	bool IsNativeTextKeyBlocked(const std::string& key) const;  // Valve's own UM_TextMsg param(0)
 
 public: // ISmmPlugin metadata
 	const char* GetAuthor() { return "Killhaus"; }
@@ -65,8 +76,17 @@ public: // config (settings.ini - same keys as the old chat_cleaner)
 	// zero-cost safety net in case of an edge case we haven't seen.
 	float m_flConnectDedupSeconds = 3.0f;
 
-	std::vector<std::string> m_vecBlockedChatPhrases;  // configs/BetterChat/blocked_text.txt
-	std::vector<std::string> m_vecBlockedRadioPhrases; // configs/BetterChat/blocked_radio.txt
+	// Same meaning as in the old chat_cleaner: keys of Valve's own native
+	// UM_TextMsg broadcasts (cash-award spam, "Cstrike_TitlesTXT_Game_connected"
+	// etc. / radio callout text) that get suppressed so only BetterChat's own
+	// custom message shows. Matched by exact key, not substring.
+	std::vector<std::string> m_vecBlockedNativeText;  // configs/BetterChat/blocked_text.txt
+	std::vector<std::string> m_vecBlockedNativeRadio; // configs/BetterChat/blocked_radio.txt
+
+	// NEW: what real players type in chat (say/say_team) - substring match,
+	// case-insensitive. Not part of the old chat_cleaner; added against the
+	// ad-bot spam ("cs2commends.com" etc.) found on 26.08.2026.
+	std::vector<std::string> m_vecBlockedChatWords; // configs/BetterChat/blocked_chat_words.txt
 
 public: // per-slot bookkeeping (no entity/schema lookups needed)
 	struct SlotInfo

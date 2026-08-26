@@ -1,6 +1,45 @@
-// Блокируемые радио-команды.
-//
-// ЕЩЁ НЕ ПРОВЕРЕНО НА ЖИВОМ СЕРВЕРЕ: не до конца ясно, в каком именно виде
-// консоль получает выбор конкретной радио-фразы (radio1/2/3 + подкоманда,
-// либо отдельная именованная команда вроде "coverme"). Пока список пуст -
-// заполнится и заработает после теста на сервере.
+// Блокируемые НАТИВНЫЕ радио-сообщения Valve (ключи UM_TextMsg param(0)).
+// Точное совпадение. Список перенесён без изменений из оригинального
+// chat_cleaner - тот же смысл, тот же список.
+
+SFUI_TitlesTXT_Fire_in_the_hole
+SFUI_TitlesTXT_Flashbang_in_the_hole
+SFUI_TitlesTXT_Smoke_in_the_hole
+SFUI_TitlesTXT_Decoy_in_the_hole
+SFUI_TitlesTXT_Molotov_in_the_hole
+SFUI_TitlesTXT_Incendiary_in_the_hole
+Cstrike_TitlesTXT_Cover_me
+Cstrike_TitlesTXT_Regroup_team
+Cstrike_TitlesTXT_You_take_the_point
+Cstrike_TitlesTXT_Taking_fire
+Cstrike_TitlesTXT_Team_fall_back
+Cstrike_TitlesTXT_Stick_together_team
+Cstrike_TitlesTXT_Storm_the_front
+Cstrike_TitlesTXT_Follow_me
+Cstrike_TitlesTXT_Hold_this_position
+Cstrike_TitlesTXT_Go_go_go
+Cstrike_TitlesTXT_Get_out_of_there
+Cstrike_TitlesTXT_Go_A
+Cstrike_TitlesTXT_Go_B
+Cstrike_TitlesTXT_Report_in_team
+Cstrike_TitlesTXT_Reporting_in
+Cstrike_TitlesTXT_In_position
+Cstrike_TitlesTXT_Sector_clear
+Cstrike_TitlesTXT_Enemy_down
+Cstrike_TitlesTXT_Enemy_spotted
+Cstrike_TitlesTXT_Need_backup
+Cstrike_TitlesTXT_Hostage_down
+Cstrike_TitlesTXT_Got_Hostages
+Cstrike_TitlesTXT_Defusing_Bomb
+Cstrike_TitlesTXT_Planting_Bomb
+Cstrike_TitlesTXT_Fire_in_the_hole
+Cstrike_TitlesTXT_Roger_that
+Cstrike_TitlesTXT_Negative
+Cstrike_TitlesTXT_Affirmative
+Cstrike_TitlesTXT_Cheer
+Cstrike_TitlesTXT_Thanks
+Cstrike_TitlesTXT_Compliment
+Cstrike_TitlesTXT_Sorry
+Cstrike_TitlesTXT_Need_Drop
+Cstrike_TitlesTXT_Game_afk_bomb_drop
+Cstrike_TitlesTXT_Game_get_out_of_there

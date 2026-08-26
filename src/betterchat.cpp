@@ -56,6 +56,14 @@ SH_DECL_HOOK4_void(IServerGameClients, ClientPutInServer, SH_NOATTRIB, 0, CPlaye
 SH_DECL_HOOK5_void(IServerGameClients, ClientDisconnect, SH_NOATTRIB, 0, CPlayerSlot, ENetworkDisconnectionReason, char const*, uint64, char const*);
 SH_DECL_HOOK2_void(IServerGameClients, ClientCommand, SH_NOATTRIB, 0, CPlayerSlot, const CCommand&);
 
+// The OTHER PostEventAbstract overload (client-array based) - what the game's
+// own internal broadcasts (cash-award text, native radio text, etc.) go
+// through. This is a distinct vtable slot from the IRecipientFilter overload
+// used by SendChat() below, so hooking it cannot see/affect our own messages.
+// Signature verified against cs2kz-metamod (public, production CS2 plugin).
+SH_DECL_HOOK8_void(IGameEventSystem, PostEventAbstract, SH_NOATTRIB, 0, CSplitScreenSlot, bool, int, const uint64*,
+					INetworkMessageInternal*, const CNetMessage*, unsigned long, NetChannelBufType_t);
+
 // ---------------------------------------------------------------------------
 // Recipient filter targeting every currently-connected client (same as Reklama).
 // ---------------------------------------------------------------------------
@@ -322,13 +330,15 @@ void BetterChat::LoadConfig()
 		}
 	}
 
-	LoadPlainTextList(base + "blocked_text.txt", m_vecBlockedChatPhrases);
-	LoadPlainTextList(base + "blocked_radio.txt", m_vecBlockedRadioPhrases);
+	LoadPlainTextList(base + "blocked_text.txt", m_vecBlockedNativeText);
+	LoadPlainTextList(base + "blocked_radio.txt", m_vecBlockedNativeRadio);
+	LoadPlainTextList(base + "blocked_chat_words.txt", m_vecBlockedChatWords);
 
 	Msg("[BetterChat] Config loaded: DebugMode=%d, CustomTeamMessages=%d, CustomConnectMessages=%d, "
-		"CustomDisconnectMessages=%d, %d blocked chat phrases, %d blocked radio phrases\n",
+		"CustomDisconnectMessages=%d, %d blocked native text keys, %d blocked native radio keys, "
+		"%d blocked chat words\n",
 		m_bDebugMode, m_bCustomTeamMessages, m_bCustomConnectMessages, m_bCustomDisconnectMessages,
-		(int)m_vecBlockedChatPhrases.size(), (int)m_vecBlockedRadioPhrases.size());
+		(int)m_vecBlockedNativeText.size(), (int)m_vecBlockedNativeRadio.size(), (int)m_vecBlockedChatWords.size());
 }
 
 static std::string ToLowerCopy(const std::string& s)
@@ -338,10 +348,10 @@ static std::string ToLowerCopy(const std::string& s)
 	return out;
 }
 
-bool BetterChat::IsChatBlocked(const std::string& text) const
+bool BetterChat::IsPlayerChatBlocked(const std::string& text) const
 {
 	std::string lower = ToLowerCopy(text);
-	for (const std::string& phrase : m_vecBlockedChatPhrases)
+	for (const std::string& phrase : m_vecBlockedChatWords)
 	{
 		if (!phrase.empty() && lower.find(ToLowerCopy(phrase)) != std::string::npos)
 			return true;
@@ -349,13 +359,14 @@ bool BetterChat::IsChatBlocked(const std::string& text) const
 	return false;
 }
 
-bool BetterChat::IsRadioBlocked(const std::string& radioCmd) const
+bool BetterChat::IsNativeTextKeyBlocked(const std::string& key) const
 {
-	for (const std::string& phrase : m_vecBlockedRadioPhrases)
-	{
-		if (radioCmd == phrase)
+	for (const std::string& k : m_vecBlockedNativeText)
+		if (key == k)
 			return true;
-	}
+	for (const std::string& k : m_vecBlockedNativeRadio)
+		if (key == k)
+			return true;
 	return false;
 }
 
@@ -485,34 +496,58 @@ void BetterChat::Hook_ClientCommand(CPlayerSlot slot, const CCommand& args)
 		RETURN_META(MRES_IGNORED);
 	}
 
-	// --- chat filter: "say" / "say_team" ---
+	// --- chat filter: "say" / "say_team" (what the PLAYER typed) ---
 	if ((!strcmp(cmd, "say") || !strcmp(cmd, "say_team")) && args.ArgC() >= 2)
 	{
 		std::string text = args.Arg(1);
 		if (!text.empty() && text.front() == '"' && text.back() == '"' && text.size() >= 2)
 			text = text.substr(1, text.size() - 2);
 
-		if (IsChatBlocked(text))
+		if (IsPlayerChatBlocked(text))
 		{
 			if (m_bDebugMode)
 				Msg("[BetterChat] Blocked chat from %s: %s\n", playerName, text.c_str());
 
 			RETURN_META(MRES_SUPERCEDE); // swallow the command - it never reaches chat
 		}
+	}
 
+	RETURN_META(MRES_IGNORED);
+}
+
+// Suppresses Valve's own native UM_TextMsg broadcasts whose param(0) is a
+// blocked key (blocked_text.txt / blocked_radio.txt) - by zeroing the
+// recipient bitmask before the original call runs, same technique as
+// cs2kz-metamod's kz_quiet.cpp. Never touches BetterChat's own messages:
+// those go through the OTHER PostEventAbstract overload entirely.
+void BetterChat::Hook_PostEventAbstract(CSplitScreenSlot nSlot, bool bLocalOnly, int nClientCount, const uint64* clients,
+										 INetworkMessageInternal* pEvent, const CNetMessage* pData, unsigned long nSize,
+										 NetChannelBufType_t bufType)
+{
+	if (!pEvent || !pData || !clients)
+	{
 		RETURN_META(MRES_IGNORED);
 	}
 
-	// --- radio filter: "radio1" / "radio2" / "radio3" (voice command groups) ---
-	if (!strncmp(cmd, "radio", 5) && args.ArgC() >= 2)
+	NetMessageInfo_t* info = pEvent->GetNetMessageInfo();
+	if (!info || info->m_MessageId != UM_TextMsg)
 	{
-		if (IsRadioBlocked(args.Arg(1)))
-		{
-			if (m_bDebugMode)
-				Msg("[BetterChat] Blocked radio from %s: %s\n", playerName, args.Arg(1));
+		RETURN_META(MRES_IGNORED);
+	}
 
-			RETURN_META(MRES_SUPERCEDE);
-		}
+	auto* msg = const_cast<CNetMessage*>(pData)->ToPB<CUserMessageTextMsg>();
+	if (msg->param_size() < 1)
+	{
+		RETURN_META(MRES_IGNORED);
+	}
+
+	const std::string key = msg->param(0);
+	if (IsNativeTextKeyBlocked(key))
+	{
+		if (m_bDebugMode)
+			Msg("[BetterChat] Suppressed native TextMsg: %s\n", key.c_str());
+
+		*const_cast<uint64*>(clients) = 0; // zero recipients - original call still runs, reaches nobody
 	}
 
 	RETURN_META(MRES_IGNORED);
@@ -534,6 +569,7 @@ bool BetterChat::Load(PluginId id, ISmmAPI* ismm, char* error, size_t maxlen, bo
 	SH_ADD_HOOK(IServerGameClients, ClientPutInServer, g_pSource2GameClients, SH_MEMBER(this, &BetterChat::Hook_ClientPutInServer), true);
 	SH_ADD_HOOK(IServerGameClients, ClientDisconnect, g_pSource2GameClients, SH_MEMBER(this, &BetterChat::Hook_ClientDisconnect), true);
 	SH_ADD_HOOK(IServerGameClients, ClientCommand, g_pSource2GameClients, SH_MEMBER(this, &BetterChat::Hook_ClientCommand), false);
+	SH_ADD_HOOK(IGameEventSystem, PostEventAbstract, g_gameEventSystem, SH_MEMBER(this, &BetterChat::Hook_PostEventAbstract), false);
 
 	LoadConfig();
 
@@ -548,6 +584,10 @@ bool BetterChat::Unload(char* error, size_t maxlen)
 		SH_REMOVE_HOOK(IServerGameClients, ClientPutInServer, g_pSource2GameClients, SH_MEMBER(this, &BetterChat::Hook_ClientPutInServer), true);
 		SH_REMOVE_HOOK(IServerGameClients, ClientDisconnect, g_pSource2GameClients, SH_MEMBER(this, &BetterChat::Hook_ClientDisconnect), true);
 		SH_REMOVE_HOOK(IServerGameClients, ClientCommand, g_pSource2GameClients, SH_MEMBER(this, &BetterChat::Hook_ClientCommand), false);
+	}
+	if (g_gameEventSystem)
+	{
+		SH_REMOVE_HOOK(IGameEventSystem, PostEventAbstract, g_gameEventSystem, SH_MEMBER(this, &BetterChat::Hook_PostEventAbstract), false);
 	}
 	return true;
 }

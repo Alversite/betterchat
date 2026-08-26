@@ -21,7 +21,7 @@ vdf_content += f'\t"file"\t"addons/{name}/{name}"\n'
 vdf_content += '}\n'
 builder.AddOutputFile(os.path.join('addons', 'metamod', f'{name}.vdf'), vdf_content.encode('utf8'))
 
-for fname in ['settings.ini', 'blocked_text.txt', 'blocked_radio.txt', 'blocked_events.txt']:
+for fname in ['settings.ini', 'blocked_text.txt', 'blocked_radio.txt', 'blocked_chat_words.txt', 'blocked_events.txt']:
   builder.AddCopy(
     os.path.join(builder.sourcePath, 'configs', 'addons', 'configs', name, fname),
     configs_folder)

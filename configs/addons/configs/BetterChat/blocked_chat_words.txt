@@ -1,0 +1,9 @@
+// НОВОЕ (не было в chat_cleaner): блокируемые фразы в чате ИГРОКОВ
+// (регистр не важен, ищется подстрока). Стартовый список - рекламные боты,
+// пойманные в логах 26.08.2026 (см. отчёт про "cs2commends.com" /
+// "jaegerservice.xyz").
+
+cs2commends.com
+jaegerservice.xyz
+discord.gg/cs2commends
+steam.cs2commends.com
