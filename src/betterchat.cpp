@@ -74,7 +74,7 @@ class IGameResourceService;
 #ifndef GAMERESOURCESERVICESERVER_INTERFACE_VERSION
 #define GAMERESOURCESERVICESERVER_INTERFACE_VERSION "GameResourceServiceServerV001"
 #endif
-IGameResourceService* g_pGameResourceServiceServer = nullptr;
+extern IGameResourceService* g_pGameResourceServiceServer; // also SDK-provided
 CEntitySystem* g_pEntitySystem = nullptr;
 CGameEntitySystem* g_pGameEntitySystem = nullptr;
 
