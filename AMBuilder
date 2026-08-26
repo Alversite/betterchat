@@ -18,7 +18,9 @@ for sdk_target in MMSPlugin.sdk_targets:
     'src/betterchat.cpp',
     os.path.join('SchemaEntity', 'schemasystem.cpp'),
     os.path.join('SchemaEntity', 'module.cpp'),
-    os.path.join('SchemaEntity', 'memaddr.cpp'),
+    # memaddr.cpp intentionally NOT compiled: every function it defines is
+    # already inline in memaddr.h (with different, stale member names) - it's
+    # dead leftover code, never part of KillhausMonitor's own build either.
   ]
 
   if cxx.target.platform == 'linux':
