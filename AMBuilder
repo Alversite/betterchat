@@ -17,16 +17,15 @@ for sdk_target in MMSPlugin.sdk_targets:
   binary.sources += [
     'src/betterchat.cpp',
     os.path.join('SchemaEntity', 'schemasystem.cpp'),
+    # module.cpp is a self-contained, cross-platform implementation of
+    # DynLibUtils::CModule - module_linux.cpp/module_windows.cpp are
+    # alternate, redundant implementations of the SAME functions and must
+    # NOT be compiled alongside it (linker "multiple definition" otherwise).
     os.path.join('SchemaEntity', 'module.cpp'),
     # memaddr.cpp intentionally NOT compiled: every function it defines is
     # already inline in memaddr.h (with different, stale member names) - it's
     # dead leftover code, never part of KillhausMonitor's own build either.
   ]
-
-  if cxx.target.platform == 'linux':
-    binary.sources += [os.path.join('SchemaEntity', 'module_linux.cpp')]
-  elif cxx.target.platform == 'windows':
-    binary.sources += [os.path.join('SchemaEntity', 'module_windows.cpp')]
 
   # Generate the protobuf usermessage types (CUserMessageTextMsg) and network
   # connection types (ENetworkDisconnectionReason), same as Reklama.
