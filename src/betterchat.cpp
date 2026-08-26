@@ -41,6 +41,7 @@ static const int CS_UM_TextMsg = 307;
 #include "utils.hpp"
 #include "CBaseEntity.h"
 #include "CCSPlayerController.h"
+#include "module.h"
 
 #include <cctype>
 #include <cstdarg>
@@ -89,6 +90,12 @@ CGameEntitySystem* GameEntitySystem()
 }
 
 SH_DECL_HOOK3_void(IServerGameDLL, GameFrame, SH_NOATTRIB, 0, bool, bool, bool);
+
+// EXPERIMENTAL (see betterchat.h): located via RTTI vtable-name lookup, not
+// a live interface pointer from GET_V_IFACE - IGameEventManager2 isn't
+// exposed through the normal factory in CS2.
+SH_DECL_HOOK2(IGameEventManager2, FireEvent, SH_NOATTRIB, 0, bool, IGameEvent*, bool);
+static int g_iFireEventHookId = -1;
 
 static CGlobalVars* GetGlobals()
 {
@@ -370,6 +377,7 @@ void BetterChat::LoadConfig()
 			if (const KVNode* n = root.Find("CustomConnectMessages")) m_bCustomConnectMessages = atoi(n->value.c_str()) != 0;
 			if (const KVNode* n = root.Find("CustomDisconnectMessages")) m_bCustomDisconnectMessages = atoi(n->value.c_str()) != 0;
 			if (const KVNode* n = root.Find("ConnectDedupSeconds")) m_flConnectDedupSeconds = (float)atof(n->value.c_str());
+			if (const KVNode* n = root.Find("SuppressNativeTeamJoinText")) m_bSuppressNativeTeamJoinText = atoi(n->value.c_str()) != 0;
 		}
 	}
 
@@ -404,11 +412,17 @@ bool BetterChat::IsPlayerChatBlocked(const std::string& text) const
 
 bool BetterChat::IsNativeTextKeyBlocked(const std::string& key) const
 {
+	// CS2 sends localization keys with a leading '#' (e.g.
+	// "#Cstrike_TitlesTXT_Game_connected") - confirmed live 26.08.2026 -
+	// while blocked_text.txt/blocked_radio.txt (ported from the old
+	// chat_cleaner) list them without it. Strip it before comparing.
+	const std::string& k2 = (!key.empty() && key[0] == '#') ? key.substr(1) : key;
+
 	for (const std::string& k : m_vecBlockedNativeText)
-		if (key == k)
+		if (k2 == k)
 			return true;
 	for (const std::string& k : m_vecBlockedNativeRadio)
-		if (key == k)
+		if (k2 == k)
 			return true;
 	return false;
 }
@@ -592,6 +606,33 @@ void BetterChat::PollTeamChanges()
 	}
 }
 
+// EXPERIMENTAL - see betterchat.h. Re-fires "player_team" with
+// bDontBroadcast forced to true (so it still runs server-side - other
+// plugins/game logic listening for it are unaffected - it just never
+// reaches clients, which is what stops the client-drawn "is joining the
+// Terrorists" line). Everything else passes through untouched.
+bool BetterChat::Hook_FireEvent(IGameEvent* event, bool bDontBroadcast)
+{
+	if (m_bSuppressNativeTeamJoinText && event && !bDontBroadcast)
+	{
+		const char* name = event->GetName();
+		if (name && !strcmp(name, "player_team"))
+		{
+			IGameEventManager2* pMgr = META_IFACEPTR(IGameEventManager2);
+			if (pMgr)
+			{
+				if (m_bDebugMode)
+					Msg("[BetterChat] Re-firing player_team with bDontBroadcast=true\n");
+
+				bool result = SH_CALL(pMgr, &IGameEventManager2::FireEvent)(event, true);
+				RETURN_META_VALUE(MRES_SUPERCEDE, result);
+			}
+		}
+	}
+
+	RETURN_META_VALUE(MRES_IGNORED, false);
+}
+
 void BetterChat::Hook_GameFrame(bool simulating, bool bFirstTick, bool bLastTick)
 {
 	CGlobalVars* pGlobals = GetGlobals();
@@ -718,6 +759,29 @@ bool BetterChat::Load(PluginId id, ISmmAPI* ismm, char* error, size_t maxlen, bo
 
 	LoadConfig();
 
+	// EXPERIMENTAL, gated by config (see betterchat.h) - locate
+	// IGameEventManager2's vtable by RTTI name and hook FireEvent directly on
+	// it. No live interface pointer needed for this: SH_ADD_DVPHOOK operates
+	// on the vtable itself.
+	if (m_bSuppressNativeTeamJoinText)
+	{
+		static DynLibUtils::CModule s_ServerModule("server");
+		DynLibUtils::CMemory vtbl = s_ServerModule.GetVirtualTableByName("CGameEventManager");
+		if (vtbl)
+		{
+			IGameEventManager2* pVtblAsInstance = vtbl.RCast<IGameEventManager2*>();
+			g_iFireEventHookId = SH_ADD_DVPHOOK(IGameEventManager2, FireEvent, pVtblAsInstance,
+												 SH_MEMBER(this, &BetterChat::Hook_FireEvent), false);
+			Msg("[BetterChat] Native team-join suppression: CGameEventManager vtable %s, hook %s\n",
+				vtbl ? "found" : "NOT found", g_iFireEventHookId >= 0 ? "installed" : "FAILED");
+		}
+		else
+		{
+			Warning("[BetterChat] Native team-join suppression enabled in config, but CGameEventManager "
+					"vtable was not found - feature disabled this run.\n");
+		}
+	}
+
 	Msg("[BetterChat] Plugin loaded.\n");
 	return true;
 }
@@ -737,6 +801,11 @@ bool BetterChat::Unload(char* error, size_t maxlen)
 	if (g_pSource2Server)
 	{
 		SH_REMOVE_HOOK(IServerGameDLL, GameFrame, g_pSource2Server, SH_MEMBER(this, &BetterChat::Hook_GameFrame), true);
+	}
+	if (g_iFireEventHookId >= 0)
+	{
+		SH_REMOVE_HOOK_ID(g_iFireEventHookId);
+		g_iFireEventHookId = -1;
 	}
 	return true;
 }

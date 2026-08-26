@@ -19,6 +19,7 @@
 #include <eiface.h>
 #include <playerslot.h>
 #include <networksystem/inetworkserializer.h>
+#include <igameevents.h>
 
 #include <string>
 #include <vector>
@@ -58,6 +59,19 @@ public: // SourceHook callbacks (all on ISource2GameClients - one interface, one
 	void Hook_GameFrame(bool simulating, bool bFirstTick, bool bLastTick);
 	void PollTeamChanges();
 
+	// EXPERIMENTAL (risk accepted 26.08.2026): the client-rendered native
+	// "X is joining the Terrorists/CT" line isn't a chat message at all - the
+	// client draws it locally off the "player_team" game event. The only way
+	// to stop it is to keep that specific event from broadcasting to clients.
+	// Found via IGameEventManager2, located at runtime by RTTI vtable name
+	// lookup (DynLibUtils::CModule::GetVirtualTableByName, same technique
+	// CS2Fixes uses in production) - NOT a raw byte-signature scan, so it
+	// should survive engine updates better, but is still less proven than
+	// everything else in this plugin. Gated by "SuppressNativeTeamJoinText"
+	// in settings.ini so it can be switched off instantly without a rebuild
+	// if it ever misbehaves.
+	bool Hook_FireEvent(IGameEvent* event, bool bDontBroadcast);
+
 public: // logic
 	void LoadConfig();
 	void SendChat(const char* fmt, ...);
@@ -84,6 +98,10 @@ public: // config (settings.ini - same keys as the old chat_cleaner)
 	// ClientPutInServer should only ever fire once per real join, but this is a
 	// zero-cost safety net in case of an edge case we haven't seen.
 	float m_flConnectDedupSeconds = 3.0f;
+
+	// EXPERIMENTAL, see Hook_FireEvent - default OFF until confirmed safe on
+	// a live server. Flip to "1" in settings.ini to try it.
+	bool m_bSuppressNativeTeamJoinText = false;
 
 	// Same meaning as in the old chat_cleaner: keys of Valve's own native
 	// UM_TextMsg broadcasts (cash-award spam, "Cstrike_TitlesTXT_Game_connected"

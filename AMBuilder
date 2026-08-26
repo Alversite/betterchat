@@ -17,7 +17,14 @@ for sdk_target in MMSPlugin.sdk_targets:
   binary.sources += [
     'src/betterchat.cpp',
     os.path.join('SchemaEntity', 'schemasystem.cpp'),
+    os.path.join('SchemaEntity', 'module.cpp'),
+    os.path.join('SchemaEntity', 'memaddr.cpp'),
   ]
+
+  if cxx.target.platform == 'linux':
+    binary.sources += [os.path.join('SchemaEntity', 'module_linux.cpp')]
+  elif cxx.target.platform == 'windows':
+    binary.sources += [os.path.join('SchemaEntity', 'module_windows.cpp')]
 
   # Generate the protobuf usermessage types (CUserMessageTextMsg) and network
   # connection types (ENetworkDisconnectionReason), same as Reklama.
