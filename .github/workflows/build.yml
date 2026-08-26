@@ -80,10 +80,3 @@ jobs:
         with:
           name: BetterChat-linux
           path: betterchat/build/package
-
-      - name: Upload artifact (raw .so)
-        uses: actions/upload-artifact@v4
-        with:
-          name: BetterChat-so
-          path: betterchat/build/package/addons/BetterChat/BetterChat.so
-          if-no-files-found: warn
