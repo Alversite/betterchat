@@ -23,7 +23,16 @@
 #include "tier1/convar.h"
 
 #include "usermessages.pb.h"
-#include "cstrike15_usermessages.pb.h"
+
+// CS-game-specific numeric IDs for the "same" messages (see UM_TextMsg etc.
+// from usermessages.proto) - CS2 dispatches under either ID depending on
+// path, so both are checked. Values from
+// game/shared/cstrike15/cstrike15_usermessages.proto (hardcoded instead of
+// pulling that .proto in: it drags a whole Steam-GC proto dependency chain
+// we don't otherwise need, just for 3 integers).
+static const int CS_UM_SayText = 305;
+static const int CS_UM_SayText2 = 306;
+static const int CS_UM_TextMsg = 307;
 
 // Team-change polling (see betterchat.h) - same SchemaEntity technique
 // KillhausMonitor already uses successfully in production.
