@@ -33,7 +33,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: alliedmodders/metamod-source
-          ref: 1.12-dev
+          ref: 7ec0f16948ab3a0910a98b4ac10e1c0e360d5339
           path: metamod-source
           submodules: recursive
 
