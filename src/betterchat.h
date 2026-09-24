@@ -82,6 +82,7 @@ public: // SourceHook callbacks (all on ISource2GameClients - one interface, one
 public: // logic
 	void LoadConfig();
 	void LoadAdminTags(const std::string& path);
+	void LoadVipTags(const std::string& path);
 	void LoadChatFormat(const std::string& path);
 	void SendChat(const char* fmt, ...);
 	bool IsPlayerChatBlocked(const std::string& text) const;    // player-typed spam (say/say_team)
@@ -114,7 +115,7 @@ public: // ISmmPlugin metadata
 	const char* GetDescription() { return "Connect/disconnect/team announcer, chat filter, chat format, admin/VIP tags + !prefix"; }
 	const char* GetURL() { return "https://killhaus.su"; }
 	const char* GetLicense() { return "MIT"; }
-	const char* GetVersion() { return "1.2.0"; }
+	const char* GetVersion() { return "1.2.1"; }
 	const char* GetDate() { return __DATE__; }
 	const char* GetLogTag() { return "BETTERCHAT"; }
 
@@ -163,11 +164,13 @@ public: // config (settings.ini - same keys as the old chat_cleaner)
 	std::unordered_map<uint64, std::string> m_mapAdmins;      // SteamID64 -> role   (admin_tags.ini "admins")
 	std::unordered_map<std::string, std::string> m_mapChatFormat; // message type -> template (chat_format.ini)
 
-	// VIP tags: VIP group (Pisex VIP's groups.ini) -> role, asked of the VIP
-	// plugin at message time. Soft dependency - no VIP plugin means no VIP
-	// tags, nothing else changes. "VipTags" in settings.ini, default ON.
+	// VIP tags: VIP group (Pisex VIP's groups.ini) -> look, straight from
+	// vip_tags.ini (no role indirection - one file per privilege kind, as
+	// asked). The group is asked of the VIP plugin at message time. Soft
+	// dependency - no VIP plugin means no VIP tags, nothing else changes.
+	// "VipTags" in settings.ini, default ON.
 	bool m_bVipTags = true;
-	std::unordered_map<std::string, std::string> m_mapVipGroups; // admin_tags.ini "vip_groups"
+	std::unordered_map<std::string, AdminRole> m_mapVipRoles;    // VIP group -> look (vip_tags.ini)
 	IVIPApi* m_pVip = nullptr;
 	PluginId m_iVipPluginId = 0;
 	float m_flNextVipLookup = 0.0f;

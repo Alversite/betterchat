@@ -425,11 +425,26 @@ static uint64 ParseSteamId(std::string s)
 	return v < kIndividualBase ? kIndividualBase + v : v;
 }
 
+// One tag look: "tag" / "tag_color" / "name_color" / "chat_color". Same keys in
+// admin_tags.ini roles and in vip_tags.ini groups.
+static BetterChat::AdminRole ParseRole(const KVNode& r)
+{
+	BetterChat::AdminRole role;
+	if (const KVNode* n = r.Find("tag"))
+	{
+		const KVNode* c = r.Find("tag_color");
+		role.tag = ApplyCpColors((c ? c->value : std::string()) + n->value);
+		role.tagText = n->value;
+	}
+	if (const KVNode* n = r.Find("name_color")) role.nameColor = ApplyCpColors(n->value);
+	if (const KVNode* n = r.Find("chat_color")) role.chatColor = ApplyCpColors(n->value);
+	return role;
+}
+
 void BetterChat::LoadAdminTags(const std::string& path)
 {
 	m_mapRoles.clear();
 	m_mapAdmins.clear();
-	m_mapVipGroups.clear();
 
 	bool ok = false;
 	std::string text = ReadWholeFile(path, &ok);
@@ -449,19 +464,8 @@ void BetterChat::LoadAdminTags(const std::string& path)
 	if (const KVNode* roles = root.Find("roles"))
 	{
 		for (const KVNode& r : roles->children)
-		{
-			if (!r.isSection) continue;
-			AdminRole role;
-			if (const KVNode* n = r.Find("tag"))
-			{
-				const KVNode* c = r.Find("tag_color");
-				role.tag = ApplyCpColors((c ? c->value : std::string()) + n->value);
-				role.tagText = n->value;
-			}
-			if (const KVNode* n = r.Find("name_color")) role.nameColor = ApplyCpColors(n->value);
-			if (const KVNode* n = r.Find("chat_color")) role.chatColor = ApplyCpColors(n->value);
-			m_mapRoles[r.key] = role;
-		}
+			if (r.isSection)
+				m_mapRoles[r.key] = ParseRole(r);
 	}
 
 	if (const KVNode* admins = root.Find("admins"))
@@ -483,20 +487,29 @@ void BetterChat::LoadAdminTags(const std::string& path)
 			m_mapAdmins[xuid] = a.value;
 		}
 	}
+}
 
-	if (const KVNode* groups = root.Find("vip_groups"))
+void BetterChat::LoadVipTags(const std::string& path)
+{
+	m_mapVipRoles.clear();
+
+	bool ok = false;
+	std::string text = ReadWholeFile(path, &ok);
+	if (!ok)
 	{
-		for (const KVNode& g : groups->children)
-		{
-			if (g.isSection) continue;
-			if (m_mapRoles.find(g.value) == m_mapRoles.end())
-			{
-				Warning("[BetterChat] admin_tags.ini: VIP group \"%s\" has unknown role \"%s\" - skipped\n", g.key.c_str(), g.value.c_str());
-				continue;
-			}
-			m_mapVipGroups[g.key] = g.value;
-		}
+		Warning("[BetterChat] %s not found - VIP tags disabled\n", path.c_str());
+		return;
 	}
+	KVNode root;
+	KVParser parser(text);
+	if (!parser.Parse(root))
+	{
+		Warning("[BetterChat] Failed to parse %s - VIP tags disabled\n", path.c_str());
+		return;
+	}
+	for (const KVNode& g : root.children)
+		if (g.isSection)
+			m_mapVipRoles[g.key] = ParseRole(g); // key = VIP group name
 }
 
 void BetterChat::LoadChatFormat(const std::string& path)
@@ -560,6 +573,7 @@ void BetterChat::LoadConfig()
 	LoadPlainTextList(base + "blocked_radio.txt", m_vecBlockedNativeRadio);
 	LoadPlainTextList(base + "blocked_chat_words.txt", m_vecBlockedChatWords);
 	LoadAdminTags(base + "admin_tags.ini");
+	LoadVipTags(base + "vip_tags.ini");
 	LoadChatFormat(base + "chat_format.ini");
 
 	// Runtime data, not config - addons/data already exists on every server.
@@ -571,9 +585,9 @@ void BetterChat::LoadConfig()
 		"%d blocked chat words\n",
 		m_bDebugMode, m_bCustomTeamMessages, m_bCustomConnectMessages, m_bCustomDisconnectMessages,
 		(int)m_vecBlockedNativeText.size(), (int)m_vecBlockedNativeRadio.size(), (int)m_vecBlockedChatWords.size());
-	Msg("[BetterChat] Chat format: %s, %d message types, %d roles, %d admins, VIP tags %s (%d groups), %d saved !prefix choices\n",
+	Msg("[BetterChat] Chat format: %s, %d message types, %d admin roles, %d admins, VIP tags %s (%d groups), %d saved !prefix choices\n",
 		m_bChatFormat ? "on" : "off", (int)m_mapChatFormat.size(), (int)m_mapRoles.size(), (int)m_mapAdmins.size(),
-		m_bVipTags ? "on" : "off", (int)m_mapVipGroups.size(), (int)m_mapPrefixChoice.size());
+		m_bVipTags ? "on" : "off", (int)m_mapVipRoles.size(), (int)m_mapPrefixChoice.size());
 }
 
 void BetterChat::LoadPrefixChoices()
@@ -755,15 +769,11 @@ void BetterChat::GetRoleOptions(int iSlot, const AdminRole** ppAdmin, const Admi
 		if (vip && vip->VIP_IsVIPLoaded() && vip->VIP_IsClientVIP(iSlot))
 		{
 			const char* group = vip->VIP_GetClientVIPGroup(iSlot);
-			auto vg = (group && group[0]) ? m_mapVipGroups.find(group) : m_mapVipGroups.end();
-			if (vg != m_mapVipGroups.end())
+			auto vg = (group && group[0]) ? m_mapVipRoles.find(group) : m_mapVipRoles.end();
+			if (vg != m_mapVipRoles.end())
 			{
-				auto role = m_mapRoles.find(vg->second);
-				if (role != m_mapRoles.end())
-				{
-					*ppVip = &role->second;
-					*pszVipRole = role->first.c_str();
-				}
+				*ppVip = &vg->second;
+				*pszVipRole = vg->first.c_str();
 			}
 		}
 	}
