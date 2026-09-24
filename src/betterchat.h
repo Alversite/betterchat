@@ -26,15 +26,20 @@
 #include <unordered_map>
 
 class CUserMessageSayText2; // usermessages.pb.h, only needed in betterchat.cpp
+class IVIPApi;              // vip_api.h
+class IMenusApi;            // menus_api.h
 
-class BetterChat : public ISmmPlugin
+class BetterChat : public ISmmPlugin, public IMetamodListener
 {
 public:
 	bool Load(PluginId id, ISmmAPI* ismm, char* error, size_t maxlen, bool late);
 	bool Unload(char* error, size_t maxlen);
 	bool Pause(char* error, size_t maxlen) { return true; }
 	bool Unpause(char* error, size_t maxlen) { return true; }
-	void AllPluginsLoaded() {}
+	void AllPluginsLoaded();
+
+public: // IMetamodListener - drop the VIP/menus pointers if their plugin goes away
+	void OnPluginUnload(PluginId id);
 
 public: // SourceHook callbacks (all on ISource2GameClients - one interface, one proven ABI)
 	void Hook_ClientPutInServer(CPlayerSlot slot, char const* pszName, int type, uint64 xuid);
@@ -88,14 +93,28 @@ public: // logic
 	// template for this message type.
 	bool FormatPlayerChat(int iSlot, CUserMessageSayText2* msg);
 	uint64 GetSlotXuid(int iSlot) const;
+	IVIPApi* GetVipApi();
+	IMenusApi* GetMenusApi();
+	void SendChatTo(int iSlot, const char* fmt, ...);
+
+	// !prefix / /prefix: pick which tag to show when a player has several
+	// (admin + VIP), or none. Opened from GameFrame, never from inside the
+	// PostEventAbstract hook that spotted the command - the menu sends its
+	// own net messages, and re-entering PostEventAbstract isn't worth the risk.
+	static bool IsPrefixCommand(const std::string& text);
+	void OpenPrefixMenu(int iSlot);
+	void OnPrefixMenuSelect(int iSlot, const char* szKey);
+	void ProcessPendingMenus();
+	void LoadPrefixChoices();
+	void SavePrefixChoices();
 
 public: // ISmmPlugin metadata
 	const char* GetAuthor() { return "Killhaus"; }
 	const char* GetName() { return "BetterChat"; }
-	const char* GetDescription() { return "Connect/disconnect/team announcer, chat filter, chat format + admin tags"; }
+	const char* GetDescription() { return "Connect/disconnect/team announcer, chat filter, chat format, admin/VIP tags + !prefix"; }
 	const char* GetURL() { return "https://killhaus.su"; }
 	const char* GetLicense() { return "MIT"; }
-	const char* GetVersion() { return "1.1.0"; }
+	const char* GetVersion() { return "1.2.0"; }
 	const char* GetDate() { return __DATE__; }
 	const char* GetLogTag() { return "BETTERCHAT"; }
 
@@ -137,10 +156,44 @@ public: // config (settings.ini - same keys as the old chat_cleaner)
 		std::string tag;        // already colorized (control bytes, not {TAGS})
 		std::string nameColor;  // "
 		std::string chatColor;  // "
+		std::string tagText;    // plain tag text - shown in the !prefix menu,
+		                        // and what "same tag" means when merging options
 	};
 	std::unordered_map<std::string, AdminRole> m_mapRoles;   // role name -> look   (admin_tags.ini "roles")
 	std::unordered_map<uint64, std::string> m_mapAdmins;      // SteamID64 -> role   (admin_tags.ini "admins")
 	std::unordered_map<std::string, std::string> m_mapChatFormat; // message type -> template (chat_format.ini)
+
+	// VIP tags: VIP group (Pisex VIP's groups.ini) -> role, asked of the VIP
+	// plugin at message time. Soft dependency - no VIP plugin means no VIP
+	// tags, nothing else changes. "VipTags" in settings.ini, default ON.
+	bool m_bVipTags = true;
+	std::unordered_map<std::string, std::string> m_mapVipGroups; // admin_tags.ini "vip_groups"
+	IVIPApi* m_pVip = nullptr;
+	PluginId m_iVipPluginId = 0;
+	float m_flNextVipLookup = 0.0f;
+
+	IMenusApi* m_pMenus = nullptr;
+	PluginId m_iMenusPluginId = 0;
+	float m_flNextMenusLookup = 0.0f;
+
+	// Per-server !prefix choice, SteamID64 -> "admin" / "vip" / "off".
+	// Stored as the SOURCE rather than a role name, so a VIP moving from
+	// silver to gold keeps "show my VIP tag". addons/data/BetterChat_prefix.ini
+	std::unordered_map<uint64, std::string> m_mapPrefixChoice;
+	std::string m_strPrefixFile;
+
+	bool m_bPendingPrefixMenu[64] = {};
+	bool m_bPendingMenuClose[64] = {};
+	bool m_bOurMenuOpen[64] = {};  // closed on Unload: utils holds a callback into our .so
+
+	// Tags this player may pick from. Same tag text from both sources
+	// collapses into one entry - that's how superadmin/emerald (identical as
+	// admin and as VIP) end up with a single choice.
+	void GetRoleOptions(int iSlot, const AdminRole** ppAdmin, const AdminRole** ppVip,
+						const char** pszAdminRole, const char** pszVipRole);
+
+	// Honours the !prefix choice; default admin over VIP. nullptr = no tag.
+	const AdminRole* FindRoleForSlot(int iSlot, const char** pszRoleName);
 
 public: // per-slot bookkeeping (no entity/schema lookups needed)
 	struct SlotInfo

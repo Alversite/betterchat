@@ -8,6 +8,8 @@
  */
 
 #include "betterchat.h"
+#include "vip_api.h"
+#include "menus_api.h"
 
 #include "eiface.h"
 #include "engine/igameeventsystem.h"
@@ -152,6 +154,34 @@ private:
 	int m_iCount = 0;
 };
 
+// One player only - replies to !prefix shouldn't go to the whole server.
+class CSingleRecipientFilter : public IRecipientFilter
+{
+public:
+	explicit CSingleRecipientFilter(int iSlot)
+	{
+		if (iSlot >= 0 && iSlot < 64 && g_pEngineServer2->GetPlayerNetInfo(iSlot))
+		{
+			m_Recipients.Set(iSlot);
+			m_iCount = 1;
+		}
+	}
+
+	~CSingleRecipientFilter() override {}
+
+	NetChannelBufType_t GetNetworkBufType() const override { return BUF_RELIABLE; }
+	bool IsInitMessage() const override { return false; }
+	const CPlayerBitVec& GetRecipients() const override { return m_Recipients; }
+	CPlayerSlot GetPredictedPlayerSlot() const override { return -1; }
+
+	int Count() const { return m_iCount; }
+	bool HasRecipients() const { return m_iCount > 0; }
+
+private:
+	CPlayerBitVec m_Recipients;
+	int m_iCount = 0;
+};
+
 // ---------------------------------------------------------------------------
 // Chat colors: {TAG} placeholders -> CS2 chat control bytes. Same tag names
 // as the old chat_cleaner.phrases.txt / Reklama settings.ini.
@@ -177,6 +207,9 @@ static const ColorTag s_CpColorTags[] = {
 	{"GRAY", '\x08'}, {"LIGHTOLIVE", '\x09'}, {"OLIVE", '\x10'}, {"LIGHTBLUE", '\x0B'},
 	{"BLUE", '\x0C'}, {"PURPLE", '\x0E'}, {"LIGHTRED", '\x0F'}, {"GRAYBLUE", '\x0A'},
 	{"TEAM", '\x03'},
+	// Not in chat_processor - added for the VIP tags. Aliases for bytes above
+	// under the names CS2 actually renders them as (\x0A silver, \x10 gold).
+	{"SILVER", '\x0A'}, {"GOLD", '\x10'},
 };
 
 // Unknown {TAGS} are left as-is, which is what lets chat_format.ini keep its
@@ -396,6 +429,7 @@ void BetterChat::LoadAdminTags(const std::string& path)
 {
 	m_mapRoles.clear();
 	m_mapAdmins.clear();
+	m_mapVipGroups.clear();
 
 	bool ok = false;
 	std::string text = ReadWholeFile(path, &ok);
@@ -422,6 +456,7 @@ void BetterChat::LoadAdminTags(const std::string& path)
 			{
 				const KVNode* c = r.Find("tag_color");
 				role.tag = ApplyCpColors((c ? c->value : std::string()) + n->value);
+				role.tagText = n->value;
 			}
 			if (const KVNode* n = r.Find("name_color")) role.nameColor = ApplyCpColors(n->value);
 			if (const KVNode* n = r.Find("chat_color")) role.chatColor = ApplyCpColors(n->value);
@@ -446,6 +481,20 @@ void BetterChat::LoadAdminTags(const std::string& path)
 				continue;
 			}
 			m_mapAdmins[xuid] = a.value;
+		}
+	}
+
+	if (const KVNode* groups = root.Find("vip_groups"))
+	{
+		for (const KVNode& g : groups->children)
+		{
+			if (g.isSection) continue;
+			if (m_mapRoles.find(g.value) == m_mapRoles.end())
+			{
+				Warning("[BetterChat] admin_tags.ini: VIP group \"%s\" has unknown role \"%s\" - skipped\n", g.key.c_str(), g.value.c_str());
+				continue;
+			}
+			m_mapVipGroups[g.key] = g.value;
 		}
 	}
 }
@@ -503,6 +552,7 @@ void BetterChat::LoadConfig()
 			if (const KVNode* n = root.Find("ConnectDedupSeconds")) m_flConnectDedupSeconds = (float)atof(n->value.c_str());
 			if (const KVNode* n = root.Find("SuppressNativeTeamJoinText")) m_bSuppressNativeTeamJoinText = atoi(n->value.c_str()) != 0;
 			if (const KVNode* n = root.Find("ChatFormat")) m_bChatFormat = atoi(n->value.c_str()) != 0;
+			if (const KVNode* n = root.Find("VipTags")) m_bVipTags = atoi(n->value.c_str()) != 0;
 		}
 	}
 
@@ -512,13 +562,65 @@ void BetterChat::LoadConfig()
 	LoadAdminTags(base + "admin_tags.ini");
 	LoadChatFormat(base + "chat_format.ini");
 
+	// Runtime data, not config - addons/data already exists on every server.
+	m_strPrefixFile = std::string(g_SMAPI->GetBaseDir()) + "/addons/data/BetterChat_prefix.ini";
+	LoadPrefixChoices();
+
 	Msg("[BetterChat] Config loaded: DebugMode=%d, CustomTeamMessages=%d, CustomConnectMessages=%d, "
 		"CustomDisconnectMessages=%d, %d blocked native text keys, %d blocked native radio keys, "
 		"%d blocked chat words\n",
 		m_bDebugMode, m_bCustomTeamMessages, m_bCustomConnectMessages, m_bCustomDisconnectMessages,
 		(int)m_vecBlockedNativeText.size(), (int)m_vecBlockedNativeRadio.size(), (int)m_vecBlockedChatWords.size());
-	Msg("[BetterChat] Chat format: %s, %d message types, %d admin roles, %d admins\n",
-		m_bChatFormat ? "on" : "off", (int)m_mapChatFormat.size(), (int)m_mapRoles.size(), (int)m_mapAdmins.size());
+	Msg("[BetterChat] Chat format: %s, %d message types, %d roles, %d admins, VIP tags %s (%d groups), %d saved !prefix choices\n",
+		m_bChatFormat ? "on" : "off", (int)m_mapChatFormat.size(), (int)m_mapRoles.size(), (int)m_mapAdmins.size(),
+		m_bVipTags ? "on" : "off", (int)m_mapVipGroups.size(), (int)m_mapPrefixChoice.size());
+}
+
+void BetterChat::LoadPrefixChoices()
+{
+	m_mapPrefixChoice.clear();
+
+	bool ok = false;
+	std::string text = ReadWholeFile(m_strPrefixFile, &ok);
+	if (!ok)
+		return; // nobody has picked anything yet
+
+	KVNode root;
+	KVParser parser(text);
+	if (!parser.Parse(root))
+	{
+		Warning("[BetterChat] Failed to parse %s - !prefix choices reset\n", m_strPrefixFile.c_str());
+		return;
+	}
+	for (const KVNode& n : root.children)
+	{
+		if (n.isSection) continue;
+		uint64 xuid = strtoull(n.key.c_str(), nullptr, 10);
+		if (xuid && (n.value == "admin" || n.value == "vip" || n.value == "off"))
+			m_mapPrefixChoice[xuid] = n.value;
+	}
+}
+
+// Whole file every time - it's a handful of lines, written only when someone
+// uses the menu. Written to .tmp first so a crash mid-write can't truncate it.
+void BetterChat::SavePrefixChoices()
+{
+	std::string tmp = m_strPrefixFile + ".tmp";
+	{
+		std::ofstream out(tmp, std::ios::binary | std::ios::trunc);
+		if (!out.good())
+		{
+			Warning("[BetterChat] Can't write %s - !prefix choice not saved\n", tmp.c_str());
+			return;
+		}
+		out << "// BetterChat: tag chosen with !prefix. admin / vip / off. Written by the plugin.\n";
+		out << "\"PrefixChoice\"\n{\n";
+		for (const auto& it : m_mapPrefixChoice)
+			out << "\t\"" << (unsigned long long)it.first << "\"\t\"" << it.second << "\"\n";
+		out << "}\n";
+	}
+	if (std::rename(tmp.c_str(), m_strPrefixFile.c_str()) != 0)
+		Warning("[BetterChat] Can't replace %s - !prefix choice not saved\n", m_strPrefixFile.c_str());
 }
 
 static std::string ToLowerCopy(const std::string& s)
@@ -566,6 +668,252 @@ uint64 BetterChat::GetSlotXuid(int iSlot) const
 	return xuid ? xuid : m_Slots[iSlot].xuid;
 }
 
+// Both VIP and menus live in other plugins, so the lookup is lazy and retried
+// at most every 10 s while missing - chat keeps working without them, it just
+// loses VIP tags / the !prefix menu. OnPluginUnload drops the pointers.
+template <typename TIface>
+static TIface* LookupIface(const char* szName, TIface*& pCached, PluginId& idCached, float& flNextTry, float flNow, bool bForce)
+{
+	if (pCached)
+		return pCached;
+	if (!bForce && flNow < flNextTry)
+		return nullptr;
+	flNextTry = flNow + 10.0f;
+
+	int ret = META_IFACE_FAILED;
+	PluginId id = 0;
+	void* p = g_SMAPI->MetaFactory(szName, &ret, &id);
+	if (ret == META_IFACE_FAILED || !p)
+		return nullptr;
+
+	pCached = static_cast<TIface*>(p);
+	idCached = id;
+	return pCached;
+}
+
+static float CurTime()
+{
+	CGlobalVars* pGlobals = GetGlobals();
+	return pGlobals ? pGlobals->curtime : 0.0f;
+}
+
+IVIPApi* BetterChat::GetVipApi()
+{
+	return LookupIface(VIP_INTERFACE, m_pVip, m_iVipPluginId, m_flNextVipLookup, CurTime(), false);
+}
+
+IMenusApi* BetterChat::GetMenusApi()
+{
+	return LookupIface(MENUS_INTERFACE, m_pMenus, m_iMenusPluginId, m_flNextMenusLookup, CurTime(), false);
+}
+
+void BetterChat::AllPluginsLoaded()
+{
+	float now = CurTime();
+	LookupIface(VIP_INTERFACE, m_pVip, m_iVipPluginId, m_flNextVipLookup, now, true);
+	LookupIface(MENUS_INTERFACE, m_pMenus, m_iMenusPluginId, m_flNextMenusLookup, now, true);
+	Msg("[BetterChat] VIP API %s, menus API %s\n", m_pVip ? "found" : "NOT found", m_pMenus ? "found" : "NOT found");
+}
+
+void BetterChat::OnPluginUnload(PluginId id)
+{
+	if (m_pVip && id == m_iVipPluginId)
+	{
+		m_pVip = nullptr;
+		m_flNextVipLookup = 0.0f;
+	}
+	if (m_pMenus && id == m_iMenusPluginId)
+	{
+		m_pMenus = nullptr;
+		m_flNextMenusLookup = 0.0f;
+		for (bool& b : m_bOurMenuOpen) b = false; // utils took the menus with it
+	}
+}
+
+void BetterChat::GetRoleOptions(int iSlot, const AdminRole** ppAdmin, const AdminRole** ppVip,
+								const char** pszAdminRole, const char** pszVipRole)
+{
+	*ppAdmin = *ppVip = nullptr;
+	*pszAdminRole = *pszVipRole = nullptr;
+	if (iSlot < 0 || iSlot >= 64)
+		return; // never hand the VIP plugin an out-of-range slot
+
+	auto admin = m_mapAdmins.find(GetSlotXuid(iSlot));
+	if (admin != m_mapAdmins.end())
+	{
+		auto role = m_mapRoles.find(admin->second);
+		if (role != m_mapRoles.end())
+		{
+			*ppAdmin = &role->second;
+			*pszAdminRole = role->first.c_str();
+		}
+	}
+
+	if (m_bVipTags)
+	{
+		IVIPApi* vip = GetVipApi();
+		if (vip && vip->VIP_IsVIPLoaded() && vip->VIP_IsClientVIP(iSlot))
+		{
+			const char* group = vip->VIP_GetClientVIPGroup(iSlot);
+			auto vg = (group && group[0]) ? m_mapVipGroups.find(group) : m_mapVipGroups.end();
+			if (vg != m_mapVipGroups.end())
+			{
+				auto role = m_mapRoles.find(vg->second);
+				if (role != m_mapRoles.end())
+				{
+					*ppVip = &role->second;
+					*pszVipRole = role->first.c_str();
+				}
+			}
+		}
+	}
+
+	// Same tag both ways (superadmin, emerald) is one choice, not two.
+	if (*ppAdmin && *ppVip && (*ppAdmin)->tagText == (*ppVip)->tagText)
+	{
+		*ppVip = nullptr;
+		*pszVipRole = nullptr;
+	}
+}
+
+const BetterChat::AdminRole* BetterChat::FindRoleForSlot(int iSlot, const char** pszRoleName)
+{
+	const AdminRole *pAdmin, *pVip;
+	const char *szAdmin, *szVip;
+	GetRoleOptions(iSlot, &pAdmin, &pVip, &szAdmin, &szVip);
+
+	std::string choice;
+	auto it = m_mapPrefixChoice.find(GetSlotXuid(iSlot));
+	if (it != m_mapPrefixChoice.end())
+		choice = it->second;
+
+	const AdminRole* pRole = nullptr;
+	const char* szRole = nullptr;
+	if (choice == "off")                   { }
+	else if (choice == "vip" && pVip)      { pRole = pVip;   szRole = szVip; }
+	else if (choice == "admin" && pAdmin)  { pRole = pAdmin; szRole = szAdmin; }
+	else if (pAdmin)                       { pRole = pAdmin; szRole = szAdmin; } // no choice, or the chosen tag is gone
+	else if (pVip)                         { pRole = pVip;   szRole = szVip; }
+
+	if (pszRoleName)
+		*pszRoleName = szRole;
+	return pRole;
+}
+
+bool BetterChat::IsPrefixCommand(const std::string& text)
+{
+	size_t b = text.find_first_not_of(" \t");
+	size_t e = text.find_last_not_of(" \t");
+	if (b == std::string::npos)
+		return false;
+	std::string cmd = ToLowerCopy(text.substr(b, e - b + 1));
+	return cmd == "!prefix" || cmd == "/prefix";
+}
+
+void BetterChat::OpenPrefixMenu(int iSlot)
+{
+	const AdminRole *pAdmin, *pVip;
+	const char *szAdmin, *szVip;
+	GetRoleOptions(iSlot, &pAdmin, &pVip, &szAdmin, &szVip);
+
+	if (!pAdmin && !pVip)
+	{
+		SendChatTo(iSlot, "У тебя нет доступных тегов.");
+		return;
+	}
+
+	IMenusApi* menus = GetMenusApi();
+	if (!menus)
+	{
+		SendChatTo(iSlot, "Меню выбора тега сейчас недоступно.");
+		return;
+	}
+
+	// Which entry is in effect right now, to mark it in the menu.
+	const char* szActive = nullptr;
+	const AdminRole* pActive = FindRoleForSlot(iSlot, nullptr);
+	if (!pActive)                 szActive = "off";
+	else if (pActive == pAdmin)   szActive = "admin";
+	else                          szActive = "vip";
+
+	auto label = [szActive](const char* key, const std::string& text) {
+		return strcmp(key, szActive) == 0 ? text + " (выбран)" : text;
+	};
+
+	Menu hMenu;
+	menus->SetTitleMenu(hMenu, "Выбор тега");
+	if (pAdmin) menus->AddItemMenu(hMenu, "admin", label("admin", pAdmin->tagText).c_str());
+	if (pVip)   menus->AddItemMenu(hMenu, "vip", label("vip", pVip->tagText).c_str());
+	menus->AddItemMenu(hMenu, "off", label("off", "Без тега").c_str());
+	menus->SetBackMenu(hMenu, false);
+	menus->SetExitMenu(hMenu, true);
+	menus->SetCallback(hMenu, [this](const char* szBack, const char* szFront, int iItem, int iCbSlot) {
+		if (iCbSlot < 0 || iCbSlot >= 64)
+			return;
+		// 7/8/9 are utils' back/next/exit buttons, not our items.
+		if (iItem >= 7 || !szBack)
+		{
+			if (szBack && !strcmp(szBack, "exit"))
+				m_bOurMenuOpen[iCbSlot] = false;
+			return;
+		}
+		OnPrefixMenuSelect(iCbSlot, szBack);
+	});
+	// 4-arg overload on purpose: the 3-arg one is ambiguous with it.
+	menus->DisplayPlayerMenu(hMenu, iSlot, true, true);
+	m_bOurMenuOpen[iSlot] = true;
+}
+
+void BetterChat::OnPrefixMenuSelect(int iSlot, const char* szKey)
+{
+	std::string key = szKey;
+	if (key != "admin" && key != "vip" && key != "off")
+		return;
+
+	uint64 xuid = GetSlotXuid(iSlot);
+	if (!xuid)
+		return;
+
+	m_mapPrefixChoice[xuid] = key;
+	SavePrefixChoices();
+
+	const char* szRole = nullptr;
+	const AdminRole* pRole = FindRoleForSlot(iSlot, &szRole);
+	if (pRole)
+		SendChatTo(iSlot, "Теперь твой тег: %s", pRole->tag.c_str());
+	else
+		SendChatTo(iSlot, "Тег выключен.");
+
+	if (m_bDebugMode)
+		Msg("[BetterChat] !prefix: slot %d chose %s -> %s\n", iSlot, key.c_str(), szRole ? szRole : "none");
+
+	// Closing from inside utils' own input handler would clear the menu it is
+	// still iterating - VIP defers this to the next frame too.
+	m_bPendingMenuClose[iSlot] = true;
+}
+
+void BetterChat::ProcessPendingMenus()
+{
+	for (int i = 0; i < 64; i++)
+	{
+		if (m_bPendingMenuClose[i])
+		{
+			m_bPendingMenuClose[i] = false;
+			if (m_bOurMenuOpen[i])
+			{
+				if (IMenusApi* menus = GetMenusApi())
+					menus->ClosePlayerMenu(i);
+				m_bOurMenuOpen[i] = false;
+			}
+		}
+		if (m_bPendingPrefixMenu[i])
+		{
+			m_bPendingPrefixMenu[i] = false;
+			OpenPrefixMenu(i);
+		}
+	}
+}
+
 // Player-supplied text must not be able to inject colour bytes (or line
 // breaks) into the line we build. chat_processor backslash-escaped '{' and
 // '}' instead, which left visible backslashes in chat.
@@ -596,15 +944,15 @@ bool BetterChat::FormatPlayerChat(int iSlot, CUserMessageSayText2* msg)
 	std::string name = StripControlBytes(msg->param1());
 	std::string text = StripControlBytes(msg->param2());
 
-	auto admin = m_mapAdmins.find(GetSlotXuid(iSlot));
-	if (admin != m_mapAdmins.end())
+	const char* szRole = nullptr;
+	const AdminRole* pRole = FindRoleForSlot(iSlot, &szRole);
+	if (pRole)
 	{
-		const AdminRole& role = m_mapRoles[admin->second];
-		if (!role.tag.empty())
-			name = role.tag + " " + role.nameColor + name;
+		if (!pRole->tag.empty())
+			name = pRole->tag + " " + pRole->nameColor + name;
 		else
-			name = role.nameColor + name;
-		text = role.chatColor + text;
+			name = pRole->nameColor + name;
+		text = pRole->chatColor + text;
 	}
 
 	// Single pass over the already-colourised template: inserted name/text
@@ -621,10 +969,7 @@ bool BetterChat::FormatPlayerChat(int iSlot, CUserMessageSayText2* msg)
 	}
 
 	if (m_bDebugMode)
-	{
-		const char* roleName = admin != m_mapAdmins.end() ? admin->second.c_str() : "-";
-		Msg("[BetterChat] Formatted %s from slot %d, role %s\n", type.c_str(), iSlot, roleName);
-	}
+		Msg("[BetterChat] Formatted %s from slot %d, role %s\n", type.c_str(), iSlot, szRole ? szRole : "-");
 
 	msg->set_messagename(out);
 	return true;
@@ -633,7 +978,8 @@ bool BetterChat::FormatPlayerChat(int iSlot, CUserMessageSayText2* msg)
 // ---------------------------------------------------------------------------
 // Message sending (same technique as Reklama: no hard-coded offsets/signatures)
 // ---------------------------------------------------------------------------
-static int SendTextMsgTo(const CBroadcastFilter& filter, int hudDest, const char* text)
+template <typename TFilter>
+static int SendTextMsgTo(const TFilter& filter, int hudDest, const char* text)
 {
 	if (!g_pNetworkMessages || !g_gameEventSystem)
 		return -1;
@@ -648,7 +994,7 @@ static int SendTextMsgTo(const CBroadcastFilter& filter, int hudDest, const char
 	pData->set_dest(hudDest);
 	pData->add_param(text);
 
-	g_gameEventSystem->PostEventAbstract(-1, false, const_cast<CBroadcastFilter*>(&filter), pNetMsg, pData, 0);
+	g_gameEventSystem->PostEventAbstract(-1, false, const_cast<TFilter*>(&filter), pNetMsg, pData, 0);
 
 	delete pData;
 	return filter.Count();
@@ -664,6 +1010,19 @@ void BetterChat::SendChat(const char* fmt, ...)
 
 	std::string colored = ApplyChatColors(buf);
 	CBroadcastFilter filter;
+	SendTextMsgTo(filter, 3 /*HUD_PRINTTALK*/, colored.c_str());
+}
+
+void BetterChat::SendChatTo(int iSlot, const char* fmt, ...)
+{
+	char buf[1024];
+	va_list ap;
+	va_start(ap, fmt);
+	vsnprintf(buf, sizeof(buf), fmt, ap);
+	va_end(ap);
+
+	std::string colored = ApplyChatColors(buf);
+	CSingleRecipientFilter filter(iSlot);
 	SendTextMsgTo(filter, 3 /*HUD_PRINTTALK*/, colored.c_str());
 }
 
@@ -718,6 +1077,11 @@ void BetterChat::Hook_ClientDisconnect(CPlayerSlot slot, ENetworkDisconnectionRe
 
 		info.connected = false;
 		info.lastKnownTeam = -1; // fresh slate for whoever connects into this slot next
+
+		// utils drops a leaving player's menu itself; just forget ours.
+		m_bPendingPrefixMenu[i] = false;
+		m_bPendingMenuClose[i] = false;
+		m_bOurMenuOpen[i] = false;
 	}
 
 	RETURN_META(MRES_IGNORED);
@@ -838,6 +1202,8 @@ bool BetterChat::Hook_FireEvent(IGameEvent* event, bool bDontBroadcast)
 
 void BetterChat::Hook_GameFrame(bool simulating, bool bFirstTick, bool bLastTick)
 {
+	ProcessPendingMenus();
+
 	CGlobalVars* pGlobals = GetGlobals();
 	if (pGlobals)
 	{
@@ -913,7 +1279,16 @@ void BetterChat::Hook_PostEventAbstract(CSplitScreenSlot nSlot, bool bLocalOnly,
 			Msg("[BetterChat] SayText2 messagename=%s param1=%s param2=%s\n",
 				msg->messagename().c_str(), msg->param1().c_str(), text.c_str());
 
-		if (!text.empty() && IsPlayerChatBlocked(text))
+		if (IsPrefixCommand(text))
+		{
+			// Swallow the command itself and open the menu next frame (see
+			// betterchat.h for why not from here).
+			int iSlot = msg->entityindex() - 1;
+			if (iSlot >= 0 && iSlot < 64)
+				m_bPendingPrefixMenu[iSlot] = true;
+			*const_cast<uint64*>(clients) = 0;
+		}
+		else if (!text.empty() && IsPlayerChatBlocked(text))
 		{
 			if (m_bDebugMode)
 				Msg("[BetterChat] Blocked chat text: %s\n", text.c_str());
@@ -968,6 +1343,9 @@ bool BetterChat::Load(PluginId id, ISmmAPI* ismm, char* error, size_t maxlen, bo
 
 	LoadConfig();
 
+	// OnPluginUnload - so a VIP/utils unload can't leave us calling freed code.
+	g_SMAPI->AddListener(this, this);
+
 	// EXPERIMENTAL, gated by config (see betterchat.h) - locate
 	// IGameEventManager2's vtable by RTTI name and hook FireEvent directly on
 	// it. No live interface pointer needed for this: SH_ADD_DVPHOOK operates
@@ -997,6 +1375,15 @@ bool BetterChat::Load(PluginId id, ISmmAPI* ismm, char* error, size_t maxlen, bo
 
 bool BetterChat::Unload(char* error, size_t maxlen)
 {
+	// utils keeps a copy of our menu callback, which lives in this .so - close
+	// any !prefix menu still open before the code goes away.
+	if (m_pMenus)
+	{
+		for (int i = 0; i < 64; i++)
+			if (m_bOurMenuOpen[i] && m_pMenus->IsMenuOpen(i))
+				m_pMenus->ClosePlayerMenu(i);
+	}
+
 	if (g_pSource2GameClients)
 	{
 		SH_REMOVE_HOOK(IServerGameClients, ClientPutInServer, g_pSource2GameClients, SH_MEMBER(this, &BetterChat::Hook_ClientPutInServer), true);
