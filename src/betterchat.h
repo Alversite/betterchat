@@ -25,6 +25,8 @@
 #include <vector>
 #include <unordered_map>
 
+class CUserMessageSayText2; // usermessages.pb.h, only needed in betterchat.cpp
+
 class BetterChat : public ISmmPlugin
 {
 public:
@@ -74,17 +76,26 @@ public: // SourceHook callbacks (all on ISource2GameClients - one interface, one
 
 public: // logic
 	void LoadConfig();
+	void LoadAdminTags(const std::string& path);
+	void LoadChatFormat(const std::string& path);
 	void SendChat(const char* fmt, ...);
 	bool IsPlayerChatBlocked(const std::string& text) const;    // player-typed spam (say/say_team)
 	bool IsNativeTextKeyBlocked(const std::string& key) const;  // Valve's own UM_TextMsg param(0)
 
+	// Replaces what chat_processor did: rewrites a player's SayText2 in place
+	// so it renders with the chat_format.ini template, plus the admin tag from
+	// admin_tags.ini. Returns false (message untouched) when there's no
+	// template for this message type.
+	bool FormatPlayerChat(int iSlot, CUserMessageSayText2* msg);
+	uint64 GetSlotXuid(int iSlot) const;
+
 public: // ISmmPlugin metadata
 	const char* GetAuthor() { return "Killhaus"; }
 	const char* GetName() { return "BetterChat"; }
-	const char* GetDescription() { return "Connect/disconnect/team chat announcer + chat filter"; }
+	const char* GetDescription() { return "Connect/disconnect/team announcer, chat filter, chat format + admin tags"; }
 	const char* GetURL() { return "https://killhaus.su"; }
 	const char* GetLicense() { return "MIT"; }
-	const char* GetVersion() { return "1.0.0"; }
+	const char* GetVersion() { return "1.1.0"; }
 	const char* GetDate() { return __DATE__; }
 	const char* GetLogTag() { return "BETTERCHAT"; }
 
@@ -114,6 +125,22 @@ public: // config (settings.ini - same keys as the old chat_cleaner)
 	// case-insensitive. Not part of the old chat_cleaner; added against the
 	// ad-bot spam ("cs2commends.com" etc.) found on 26.08.2026.
 	std::vector<std::string> m_vecBlockedChatWords; // configs/BetterChat/blocked_chat_words.txt
+
+	// Replacement for chat_processor (disabled 25.09.2026 - it blanked any
+	// message type missing from its phrases file, and its admin-tag module
+	// was never loaded). "ChatFormat" in settings.ini, default ON so chat
+	// keeps looking the way chat_processor made it look.
+	bool m_bChatFormat = true;
+
+	struct AdminRole
+	{
+		std::string tag;        // already colorized (control bytes, not {TAGS})
+		std::string nameColor;  // "
+		std::string chatColor;  // "
+	};
+	std::unordered_map<std::string, AdminRole> m_mapRoles;   // role name -> look   (admin_tags.ini "roles")
+	std::unordered_map<uint64, std::string> m_mapAdmins;      // SteamID64 -> role   (admin_tags.ini "admins")
+	std::unordered_map<std::string, std::string> m_mapChatFormat; // message type -> template (chat_format.ini)
 
 public: // per-slot bookkeeping (no entity/schema lookups needed)
 	struct SlotInfo

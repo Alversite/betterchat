@@ -166,7 +166,23 @@ static const ColorTag s_ColorTags[] = {
 	{"GRAYBLUE", '\x0D'}, {"MAGENTA", '\x0E'}, {"PINK", '\x0E'},
 };
 
-static std::string ApplyChatColors(const std::string& in)
+// chat_processor's table, byte for byte. Used for everything the admin edits
+// in admin_tags.ini / chat_format.ini, so the colours already chosen in
+// chat_processor's admin.ini render exactly as before - several names mean
+// a different byte here than in s_ColorTags above (e.g. LIGHTGREEN is \x06
+// here, \x05 there). BetterChat's own announcements keep s_ColorTags.
+static const ColorTag s_CpColorTags[] = {
+	{"DEFAULT", '\x01'}, {"WHITE", '\x01'}, {"RED", '\x02'}, {"LIGHTPURPLE", '\x03'},
+	{"GREEN", '\x04'}, {"LIME", '\x05'}, {"LIGHTGREEN", '\x06'}, {"DARKRED", '\x07'},
+	{"GRAY", '\x08'}, {"LIGHTOLIVE", '\x09'}, {"OLIVE", '\x10'}, {"LIGHTBLUE", '\x0B'},
+	{"BLUE", '\x0C'}, {"PURPLE", '\x0E'}, {"LIGHTRED", '\x0F'}, {"GRAYBLUE", '\x0A'},
+	{"TEAM", '\x03'},
+};
+
+// Unknown {TAGS} are left as-is, which is what lets chat_format.ini keep its
+// {NAME}/{MESSAGE} placeholders through colourising.
+template <size_t N>
+static std::string ApplyColorTable(const std::string& in, const ColorTag (&table)[N])
 {
 	std::string out;
 	out.reserve(in.size());
@@ -180,7 +196,7 @@ static std::string ApplyChatColors(const std::string& in)
 				std::string tag = in.substr(i + 1, end - i - 1);
 				for (char& c : tag) c = (char)toupper((unsigned char)c);
 				bool matched = false;
-				for (const ColorTag& ct : s_ColorTags)
+				for (const ColorTag& ct : table)
 				{
 					if (tag == ct.name) { out.push_back(ct.code); matched = true; break; }
 				}
@@ -192,6 +208,9 @@ static std::string ApplyChatColors(const std::string& in)
 	}
 	return out;
 }
+
+static std::string ApplyChatColors(const std::string& in) { return ApplyColorTable(in, s_ColorTags); }
+static std::string ApplyCpColors(const std::string& in) { return ApplyColorTable(in, s_CpColorTags); }
 
 // ---------------------------------------------------------------------------
 // Minimal Valve KeyValues (KV1) parser - same as Reklama, reused verbatim so
@@ -349,6 +368,111 @@ static void LoadPlainTextList(const std::string& path, std::vector<std::string>&
 	}
 }
 
+// Accepts SteamID64 ("76561198871494156"), SteamID2 ("STEAM_1:0:455614214"),
+// SteamID3 ("[U:1:911228428]") or a bare account id. Returns 0 if unparseable.
+static uint64 ParseSteamId(std::string s)
+{
+	static const uint64 kIndividualBase = 76561197960265728ULL;
+
+	while (!s.empty() && isspace((unsigned char)s.back())) s.pop_back();
+	size_t start = s.find_first_not_of(" \t");
+	if (start == std::string::npos) return 0;
+	s = s.substr(start);
+
+	unsigned int x = 0, y = 0, z = 0;
+	if (sscanf(s.c_str(), "STEAM_%u:%u:%u", &x, &y, &z) == 3)
+		return kIndividualBase + (uint64)z * 2 + y;
+	if (sscanf(s.c_str(), "[U:%u:%u]", &x, &z) == 2)
+		return kIndividualBase + z;
+
+	for (char c : s)
+		if (!isdigit((unsigned char)c))
+			return 0;
+	uint64 v = strtoull(s.c_str(), nullptr, 10);
+	return v < kIndividualBase ? kIndividualBase + v : v;
+}
+
+void BetterChat::LoadAdminTags(const std::string& path)
+{
+	m_mapRoles.clear();
+	m_mapAdmins.clear();
+
+	bool ok = false;
+	std::string text = ReadWholeFile(path, &ok);
+	if (!ok)
+	{
+		Warning("[BetterChat] %s not found - admin tags disabled\n", path.c_str());
+		return;
+	}
+	KVNode root;
+	KVParser parser(text);
+	if (!parser.Parse(root))
+	{
+		Warning("[BetterChat] Failed to parse %s - admin tags disabled\n", path.c_str());
+		return;
+	}
+
+	if (const KVNode* roles = root.Find("roles"))
+	{
+		for (const KVNode& r : roles->children)
+		{
+			if (!r.isSection) continue;
+			AdminRole role;
+			if (const KVNode* n = r.Find("tag"))
+			{
+				const KVNode* c = r.Find("tag_color");
+				role.tag = ApplyCpColors((c ? c->value : std::string()) + n->value);
+			}
+			if (const KVNode* n = r.Find("name_color")) role.nameColor = ApplyCpColors(n->value);
+			if (const KVNode* n = r.Find("chat_color")) role.chatColor = ApplyCpColors(n->value);
+			m_mapRoles[r.key] = role;
+		}
+	}
+
+	if (const KVNode* admins = root.Find("admins"))
+	{
+		for (const KVNode& a : admins->children)
+		{
+			if (a.isSection) continue;
+			uint64 xuid = ParseSteamId(a.key);
+			if (!xuid)
+			{
+				Warning("[BetterChat] admin_tags.ini: can't read SteamID \"%s\" - skipped\n", a.key.c_str());
+				continue;
+			}
+			if (m_mapRoles.find(a.value) == m_mapRoles.end())
+			{
+				Warning("[BetterChat] admin_tags.ini: %s has unknown role \"%s\" - skipped\n", a.key.c_str(), a.value.c_str());
+				continue;
+			}
+			m_mapAdmins[xuid] = a.value;
+		}
+	}
+}
+
+void BetterChat::LoadChatFormat(const std::string& path)
+{
+	m_mapChatFormat.clear();
+
+	bool ok = false;
+	std::string text = ReadWholeFile(path, &ok);
+	if (!ok)
+	{
+		Warning("[BetterChat] %s not found - player chat left as the game sends it\n", path.c_str());
+		return;
+	}
+	KVNode root;
+	KVParser parser(text);
+	if (!parser.Parse(root))
+	{
+		Warning("[BetterChat] Failed to parse %s - player chat left as the game sends it\n", path.c_str());
+		return;
+	}
+	for (const KVNode& n : root.children)
+		if (!n.isSection)
+			m_mapChatFormat[n.key] = ApplyCpColors(n.value);
+}
+
 // ---------------------------------------------------------------------------
 // Config loading
 // ---------------------------------------------------------------------------
@@ -378,18 +502,23 @@ void BetterChat::LoadConfig()
 			if (const KVNode* n = root.Find("CustomDisconnectMessages")) m_bCustomDisconnectMessages = atoi(n->value.c_str()) != 0;
 			if (const KVNode* n = root.Find("ConnectDedupSeconds")) m_flConnectDedupSeconds = (float)atof(n->value.c_str());
 			if (const KVNode* n = root.Find("SuppressNativeTeamJoinText")) m_bSuppressNativeTeamJoinText = atoi(n->value.c_str()) != 0;
+			if (const KVNode* n = root.Find("ChatFormat")) m_bChatFormat = atoi(n->value.c_str()) != 0;
 		}
 	}
 
 	LoadPlainTextList(base + "blocked_text.txt", m_vecBlockedNativeText);
 	LoadPlainTextList(base + "blocked_radio.txt", m_vecBlockedNativeRadio);
 	LoadPlainTextList(base + "blocked_chat_words.txt", m_vecBlockedChatWords);
+	LoadAdminTags(base + "admin_tags.ini");
+	LoadChatFormat(base + "chat_format.ini");
 
 	Msg("[BetterChat] Config loaded: DebugMode=%d, CustomTeamMessages=%d, CustomConnectMessages=%d, "
 		"CustomDisconnectMessages=%d, %d blocked native text keys, %d blocked native radio keys, "
 		"%d blocked chat words\n",
 		m_bDebugMode, m_bCustomTeamMessages, m_bCustomConnectMessages, m_bCustomDisconnectMessages,
 		(int)m_vecBlockedNativeText.size(), (int)m_vecBlockedNativeRadio.size(), (int)m_vecBlockedChatWords.size());
+	Msg("[BetterChat] Chat format: %s, %d message types, %d admin roles, %d admins\n",
+		m_bChatFormat ? "on" : "off", (int)m_mapChatFormat.size(), (int)m_mapRoles.size(), (int)m_mapAdmins.size());
 }
 
 static std::string ToLowerCopy(const std::string& s)
@@ -425,6 +554,80 @@ bool BetterChat::IsNativeTextKeyBlocked(const std::string& key) const
 		if (k2 == k)
 			return true;
 	return false;
+}
+
+// Asks the engine first so tags work even for players who were already on the
+// server when the plugin (re)loaded; m_Slots only learns xuids on connect.
+uint64 BetterChat::GetSlotXuid(int iSlot) const
+{
+	if (iSlot < 0 || iSlot >= 64)
+		return 0;
+	uint64 xuid = g_pEngineServer2 ? g_pEngineServer2->GetClientXUID(CPlayerSlot(iSlot)) : 0;
+	return xuid ? xuid : m_Slots[iSlot].xuid;
+}
+
+// Player-supplied text must not be able to inject colour bytes (or line
+// breaks) into the line we build. chat_processor backslash-escaped '{' and
+// '}' instead, which left visible backslashes in chat.
+static std::string StripControlBytes(const std::string& in)
+{
+	std::string out;
+	out.reserve(in.size());
+	for (unsigned char c : in)
+		if (c >= 0x20 && c != 0x7F)
+			out.push_back((char)c);
+	return out;
+}
+
+bool BetterChat::FormatPlayerChat(int iSlot, CUserMessageSayText2* msg)
+{
+	std::string type = msg->messagename();
+	if (!type.empty() && type[0] == '#')
+		type.erase(0, 1);
+
+	// Only types we have a template for. Anything else - including a message
+	// we already rewrote, whose messagename is now the finished line - passes
+	// through untouched, so a second PostEventAbstract for the same message
+	// can't decorate it twice.
+	auto fmt = m_mapChatFormat.find(type);
+	if (fmt == m_mapChatFormat.end())
+		return false;
+
+	std::string name = StripControlBytes(msg->param1());
+	std::string text = StripControlBytes(msg->param2());
+
+	auto admin = m_mapAdmins.find(GetSlotXuid(iSlot));
+	if (admin != m_mapAdmins.end())
+	{
+		const AdminRole& role = m_mapRoles[admin->second];
+		if (!role.tag.empty())
+			name = role.tag + " " + role.nameColor + name;
+		else
+			name = role.nameColor + name;
+		text = role.chatColor + text;
+	}
+
+	// Single pass over the already-colourised template: inserted name/text
+	// are never scanned again, so a "{MESSAGE}" typed into a nickname stays
+	// literal.
+	const std::string& tpl = fmt->second;
+	std::string out;
+	out.reserve(tpl.size() + name.size() + text.size());
+	for (size_t i = 0; i < tpl.size();)
+	{
+		if (tpl.compare(i, 6, "{NAME}") == 0)          { out += name; i += 6; }
+		else if (tpl.compare(i, 9, "{MESSAGE}") == 0)  { out += text; i += 9; }
+		else                                           { out.push_back(tpl[i]); i++; }
+	}
+
+	if (m_bDebugMode)
+	{
+		const char* roleName = admin != m_mapAdmins.end() ? admin->second.c_str() : "-";
+		Msg("[BetterChat] Formatted %s from slot %d, role %s\n", type.c_str(), iSlot, roleName);
+	}
+
+	msg->set_messagename(out);
+	return true;
 }
 
 // ---------------------------------------------------------------------------
@@ -716,6 +919,12 @@ void BetterChat::Hook_PostEventAbstract(CSplitScreenSlot nSlot, bool bLocalOnly,
 				Msg("[BetterChat] Blocked chat text: %s\n", text.c_str());
 
 			*const_cast<uint64*>(clients) = 0;
+		}
+		else if (m_bChatFormat)
+		{
+			// Rewritten in place and left to go out - same approach as
+			// chat_processor. entityindex is the controller, i.e. slot + 1.
+			FormatPlayerChat(msg->entityindex() - 1, msg);
 		}
 	}
 	else if (info->m_MessageId == UM_SayText || info->m_MessageId == CS_UM_SayText)
