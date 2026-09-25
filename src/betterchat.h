@@ -28,6 +28,7 @@
 class CUserMessageSayText2; // usermessages.pb.h, only needed in betterchat.cpp
 class IVIPApi;              // vip_api.h
 class IMenusApi;            // menus_api.h
+class IAdminApi;            // admin_api.h
 
 class BetterChat : public ISmmPlugin, public IMetamodListener
 {
@@ -96,6 +97,7 @@ public: // logic
 	uint64 GetSlotXuid(int iSlot) const;
 	IVIPApi* GetVipApi();
 	IMenusApi* GetMenusApi();
+	IAdminApi* GetAdminApi();
 	void SendChatTo(int iSlot, const char* fmt, ...);
 
 	// !prefix / /prefix: pick which tag to show when a player has several
@@ -115,7 +117,7 @@ public: // ISmmPlugin metadata
 	const char* GetDescription() { return "Connect/disconnect/team announcer, chat filter, chat format, admin/VIP tags + !prefix"; }
 	const char* GetURL() { return "https://killhaus.su"; }
 	const char* GetLicense() { return "MIT"; }
-	const char* GetVersion() { return "1.2.1"; }
+	const char* GetVersion() { return "1.3.0"; }
 	const char* GetDate() { return __DATE__; }
 	const char* GetLogTag() { return "BETTERCHAT"; }
 
@@ -160,8 +162,17 @@ public: // config (settings.ini - same keys as the old chat_cleaner)
 		std::string tagText;    // plain tag text - shown in the !prefix menu,
 		                        // and what "same tag" means when merging options
 	};
-	std::unordered_map<std::string, AdminRole> m_mapRoles;   // role name -> look   (admin_tags.ini "roles")
-	std::unordered_map<uint64, std::string> m_mapAdmins;      // SteamID64 -> role   (admin_tags.ini "admins")
+	// Admin tags: admin_system flag -> look, in admin_tags.ini order, which is
+	// the priority - an admin gets the first flag listed that they hold. The
+	// flags are asked of Pisex's admin_system at message time, so granting
+	// admin in the panel is all it takes (same model as chat_processor's
+	// admin.ini). Soft dependency. "AdminTags" in settings.ini, default ON.
+	bool m_bAdminTags = true;
+	std::vector<std::pair<std::string, AdminRole>> m_vecAdminFlags;
+	IAdminApi* m_pAdmin = nullptr;
+	PluginId m_iAdminPluginId = 0;
+	float m_flNextAdminLookup = 0.0f;
+
 	std::unordered_map<std::string, std::string> m_mapChatFormat; // message type -> template (chat_format.ini)
 
 	// VIP tags: VIP group (Pisex VIP's groups.ini) -> look, straight from

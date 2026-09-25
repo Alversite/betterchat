@@ -10,6 +10,7 @@
 #include "betterchat.h"
 #include "vip_api.h"
 #include "menus_api.h"
+#include "admin_api.h"
 
 #include "eiface.h"
 #include "engine/igameeventsystem.h"
@@ -401,32 +402,8 @@ static void LoadPlainTextList(const std::string& path, std::vector<std::string>&
 	}
 }
 
-// Accepts SteamID64 ("76561198871494156"), SteamID2 ("STEAM_1:0:455614214"),
-// SteamID3 ("[U:1:911228428]") or a bare account id. Returns 0 if unparseable.
-static uint64 ParseSteamId(std::string s)
-{
-	static const uint64 kIndividualBase = 76561197960265728ULL;
-
-	while (!s.empty() && isspace((unsigned char)s.back())) s.pop_back();
-	size_t start = s.find_first_not_of(" \t");
-	if (start == std::string::npos) return 0;
-	s = s.substr(start);
-
-	unsigned int x = 0, y = 0, z = 0;
-	if (sscanf(s.c_str(), "STEAM_%u:%u:%u", &x, &y, &z) == 3)
-		return kIndividualBase + (uint64)z * 2 + y;
-	if (sscanf(s.c_str(), "[U:%u:%u]", &x, &z) == 2)
-		return kIndividualBase + z;
-
-	for (char c : s)
-		if (!isdigit((unsigned char)c))
-			return 0;
-	uint64 v = strtoull(s.c_str(), nullptr, 10);
-	return v < kIndividualBase ? kIndividualBase + v : v;
-}
-
 // One tag look: "tag" / "tag_color" / "name_color" / "chat_color". Same keys in
-// admin_tags.ini roles and in vip_tags.ini groups.
+// admin_tags.ini flags and in vip_tags.ini groups.
 static BetterChat::AdminRole ParseRole(const KVNode& r)
 {
 	BetterChat::AdminRole role;
@@ -443,8 +420,7 @@ static BetterChat::AdminRole ParseRole(const KVNode& r)
 
 void BetterChat::LoadAdminTags(const std::string& path)
 {
-	m_mapRoles.clear();
-	m_mapAdmins.clear();
+	m_vecAdminFlags.clear();
 
 	bool ok = false;
 	std::string text = ReadWholeFile(path, &ok);
@@ -460,33 +436,10 @@ void BetterChat::LoadAdminTags(const std::string& path)
 		Warning("[BetterChat] Failed to parse %s - admin tags disabled\n", path.c_str());
 		return;
 	}
-
-	if (const KVNode* roles = root.Find("roles"))
-	{
-		for (const KVNode& r : roles->children)
-			if (r.isSection)
-				m_mapRoles[r.key] = ParseRole(r);
-	}
-
-	if (const KVNode* admins = root.Find("admins"))
-	{
-		for (const KVNode& a : admins->children)
-		{
-			if (a.isSection) continue;
-			uint64 xuid = ParseSteamId(a.key);
-			if (!xuid)
-			{
-				Warning("[BetterChat] admin_tags.ini: can't read SteamID \"%s\" - skipped\n", a.key.c_str());
-				continue;
-			}
-			if (m_mapRoles.find(a.value) == m_mapRoles.end())
-			{
-				Warning("[BetterChat] admin_tags.ini: %s has unknown role \"%s\" - skipped\n", a.key.c_str(), a.value.c_str());
-				continue;
-			}
-			m_mapAdmins[xuid] = a.value;
-		}
-	}
+	// File order is the priority, hence a vector and not a map.
+	for (const KVNode& f : root.children)
+		if (f.isSection)
+			m_vecAdminFlags.emplace_back(f.key, ParseRole(f)); // key = admin_system flag
 }
 
 void BetterChat::LoadVipTags(const std::string& path)
@@ -566,6 +519,7 @@ void BetterChat::LoadConfig()
 			if (const KVNode* n = root.Find("SuppressNativeTeamJoinText")) m_bSuppressNativeTeamJoinText = atoi(n->value.c_str()) != 0;
 			if (const KVNode* n = root.Find("ChatFormat")) m_bChatFormat = atoi(n->value.c_str()) != 0;
 			if (const KVNode* n = root.Find("VipTags")) m_bVipTags = atoi(n->value.c_str()) != 0;
+			if (const KVNode* n = root.Find("AdminTags")) m_bAdminTags = atoi(n->value.c_str()) != 0;
 		}
 	}
 
@@ -585,8 +539,9 @@ void BetterChat::LoadConfig()
 		"%d blocked chat words\n",
 		m_bDebugMode, m_bCustomTeamMessages, m_bCustomConnectMessages, m_bCustomDisconnectMessages,
 		(int)m_vecBlockedNativeText.size(), (int)m_vecBlockedNativeRadio.size(), (int)m_vecBlockedChatWords.size());
-	Msg("[BetterChat] Chat format: %s, %d message types, %d admin roles, %d admins, VIP tags %s (%d groups), %d saved !prefix choices\n",
-		m_bChatFormat ? "on" : "off", (int)m_mapChatFormat.size(), (int)m_mapRoles.size(), (int)m_mapAdmins.size(),
+	Msg("[BetterChat] Chat format: %s, %d message types, admin tags %s (%d flags), VIP tags %s (%d groups), %d saved !prefix choices\n",
+		m_bChatFormat ? "on" : "off", (int)m_mapChatFormat.size(),
+		m_bAdminTags ? "on" : "off", (int)m_vecAdminFlags.size(),
 		m_bVipTags ? "on" : "off", (int)m_mapVipRoles.size(), (int)m_mapPrefixChoice.size());
 }
 
@@ -721,16 +676,28 @@ IMenusApi* BetterChat::GetMenusApi()
 	return LookupIface(MENUS_INTERFACE, m_pMenus, m_iMenusPluginId, m_flNextMenusLookup, CurTime(), false);
 }
 
+IAdminApi* BetterChat::GetAdminApi()
+{
+	return LookupIface(ADMIN_INTERFACE, m_pAdmin, m_iAdminPluginId, m_flNextAdminLookup, CurTime(), false);
+}
+
 void BetterChat::AllPluginsLoaded()
 {
 	float now = CurTime();
+	LookupIface(ADMIN_INTERFACE, m_pAdmin, m_iAdminPluginId, m_flNextAdminLookup, now, true);
 	LookupIface(VIP_INTERFACE, m_pVip, m_iVipPluginId, m_flNextVipLookup, now, true);
 	LookupIface(MENUS_INTERFACE, m_pMenus, m_iMenusPluginId, m_flNextMenusLookup, now, true);
-	Msg("[BetterChat] VIP API %s, menus API %s\n", m_pVip ? "found" : "NOT found", m_pMenus ? "found" : "NOT found");
+	Msg("[BetterChat] admin API %s, VIP API %s, menus API %s\n",
+		m_pAdmin ? "found" : "NOT found", m_pVip ? "found" : "NOT found", m_pMenus ? "found" : "NOT found");
 }
 
 void BetterChat::OnPluginUnload(PluginId id)
 {
+	if (m_pAdmin && id == m_iAdminPluginId)
+	{
+		m_pAdmin = nullptr;
+		m_flNextAdminLookup = 0.0f;
+	}
 	if (m_pVip && id == m_iVipPluginId)
 	{
 		m_pVip = nullptr;
@@ -752,14 +719,20 @@ void BetterChat::GetRoleOptions(int iSlot, const AdminRole** ppAdmin, const Admi
 	if (iSlot < 0 || iSlot >= 64)
 		return; // never hand the VIP plugin an out-of-range slot
 
-	auto admin = m_mapAdmins.find(GetSlotXuid(iSlot));
-	if (admin != m_mapAdmins.end())
+	if (m_bAdminTags && !m_vecAdminFlags.empty())
 	{
-		auto role = m_mapRoles.find(admin->second);
-		if (role != m_mapRoles.end())
+		IAdminApi* adm = GetAdminApi();
+		if (adm && adm->IsAdmin(iSlot))
 		{
-			*ppAdmin = &role->second;
-			*pszAdminRole = role->first.c_str();
+			for (const auto& flag : m_vecAdminFlags)
+			{
+				if (adm->HasFlag(iSlot, flag.first.c_str()))
+				{
+					*ppAdmin = &flag.second;
+					*pszAdminRole = flag.first.c_str();
+					break;
+				}
+			}
 		}
 	}
 
